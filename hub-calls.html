@@ -1,15 +1,15 @@
 <!DOCTYPE html>
-<!-- SME Hub — CALLS WINDOW · V17.6e
+<!-- SME Hub — CALLS WINDOW · V17.6g
      Why this file exists: Google's Apps Script web-app wrapper serves every
      hub page inside a sandboxed iframe whose allow-list has NO 'microphone'
      entry (verified in the live DOM, 8/20). The browser therefore refuses the
      mic inside ANY hub view, no matter what the person allows in settings.
      This page is the workaround: it is hosted OUTSIDE Apps Script (GitHub
      Pages or any static host), runs top-level, and speaks to the same backend
-     through the doGet ?rtcapi= JSON bridge. The hub opens it automatically
-     whenever someone starts or answers a call.
+     through the rtcapi JSON bridge — over POST, because SDP offers run
+     kilobytes past what a GET query string can safely carry.
      Setup (once): host this file anywhere public, then paste its URL into
-     Manager Hub ▸ OPS ▸ Override ▸ "Calls window URL". Done. -->
+     Manager Hub / OPS / Override / "Calls window URL". Done. -->
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Support Hub — Calls</title>
@@ -31,12 +31,12 @@
   .chip.speaking{border-color:#22C55E;box-shadow:0 0 0 4px rgba(34,197,94,.25)}
   .chip.muted::after{content:"🔇";position:absolute;bottom:-4px;right:-4px;font-size:12px}
   .row{display:flex;gap:8px;align-items:center}
-  .ring{border:1px solid #D97706;background:#2A2A1E00;border-radius:12px;padding:10px 12px;margin-top:10px;display:flex;gap:10px;align-items:center;background:#3A3420}
+  .ring{border:1px solid #D97706;border-radius:12px;padding:10px 12px;margin-top:10px;display:flex;gap:10px;align-items:center;background:#3A3420}
   #status{font-size:12.5px;color:var(--sub);margin-top:10px;min-height:16px}
   .err{color:#FCA5A5}
 </style></head><body><div class="wrap">
   <div class="card">
-    <h1>📞 Support Hub — Calls <span class="pill">V17.6e</span></h1>
+    <h1>📞 Support Hub — Calls <span class="pill">V17.6g</span></h1>
     <div class="sub" id="who">Connecting…</div>
     <div class="chips" id="chips"></div>
     <div class="row" id="ctl" style="display:none">
@@ -44,6 +44,7 @@
       <button class="red" onclick="leave()">Leave call</button>
     </div>
     <div id="rings"></div>
+    <button id="soundGate" class="green" style="display:none;width:100%;margin-top:10px" onclick="soundGo()">🔊 Tap once to enable sound</button>
     <div id="status"></div>
   </div>
   <div class="card sub" style="font-size:11px">
@@ -73,9 +74,10 @@ function E(i){return document.getElementById(i);}
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
 function setStatus(t,bad){E('status').innerHTML=bad?'<span class="err">'+esc(t)+'</span>':esc(t);}
 function api(action,params){
-  var u=CFG.exec+(CFG.exec.indexOf('?')>-1?'&':'?')+'rtcapi='+encodeURIComponent(action)+'&name='+encodeURIComponent(CFG.me);
-  Object.keys(params||{}).forEach(function(k){u+='&'+k+'='+encodeURIComponent(params[k]);});
-  return fetch(u,{method:'GET'}).then(function(r){return r.json();});
+  var body={rtcapi:action,name:CFG.me};
+  Object.keys(params||{}).forEach(function(k){body[k]=params[k];});
+  return fetch(CFG.exec,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();});
 }
 
 var RTC_ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
@@ -101,13 +103,30 @@ function mkPc(name){
     var a=C.auds[name];
     if(!a){a=document.createElement('audio');a.autoplay=true;document.body.appendChild(a);C.auds[name]=a;}
     a.srcObject=st;glowWire(name,st);
+    tryPlay(a);
+  };
+  pc.oniceconnectionstatechange=function(){
+    var s=pc.iceConnectionState;
+    if(s==='connected'||s==='completed'){setStatus('Connected... keep this window open while you talk.');}
+    else if(s==='failed'){setStatus('Audio path to '+name+' could not connect... usually a strict firewall or VPN. Both of you try disconnecting any VPN, then hang up & call again.',true);}
+    else if(s==='disconnected'){setStatus('Connection to '+name+' hiccuped... hold on, retrying');}
   };
   return pc;
 }
-var AC=null;
+var AC=null,needGate=false;
+function gateShow(){needGate=true;var b=E('soundGate');if(b)b.style.display='block';}
+function soundGo(){
+  needGate=false;var b=E('soundGate');if(b)b.style.display='none';
+  try{if(AC&&AC.state==='suspended')AC.resume();}catch(e){}
+  Object.keys(C.auds).forEach(function(n){tryPlay(C.auds[n]);});
+}
+function tryPlay(a){
+  try{var p=a.play();if(p&&p.catch)p.catch(function(){gateShow();});}catch(e){gateShow();}
+}
 function glowWire(name,stream){
   try{
     AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+    if(AC.state==='suspended'){AC.resume().catch(function(){gateShow();});setTimeout(function(){if(AC.state==='suspended')gateShow();},800);}
     var src=AC.createMediaStreamSource(stream),an=AC.createAnalyser();
     an.fftSize=512;src.connect(an);C.anal[name]={an:an,buf:new Uint8Array(an.frequencyBinCount)};
   }catch(e){}
