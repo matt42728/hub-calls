@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<!-- SME Hub — CALLS WINDOW · V17.6e
+     Why this file exists: Google's Apps Script web-app wrapper serves every
+     hub page inside a sandboxed iframe whose allow-list has NO 'microphone'
+     entry (verified in the live DOM, 8/20). The browser therefore refuses the
+     mic inside ANY hub view, no matter what the person allows in settings.
+     This page is the workaround: it is hosted OUTSIDE Apps Script (GitHub
+     Pages or any static host), runs top-level, and speaks to the same backend
+     through the doGet ?rtcapi= JSON bridge. The hub opens it automatically
+     whenever someone starts or answers a call.
+     Setup (once): host this file anywhere public, then paste its URL into
+     Manager Hub ▸ OPS ▸ Override ▸ "Calls window URL". Done. -->
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Support Hub — Calls</title>
+<style>
+  :root{--bg:#192640;--card:#22314F;--card2:#1D2A46;--line:#2C3E64;--ink:#F2F6FC;--sub:#C3D0E6;--mut:#8FA3C4}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(180deg,#192640,#1D2C4C);color:var(--ink);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .wrap{width:min(460px,94vw)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:12px}
+  h1{font-size:16px;margin:0 0 2px}
+  .sub{font-size:11.5px;color:var(--mut)}
+  .pill{display:inline-block;font-size:10px;font-weight:800;background:#26365A;color:var(--sub);border:1px solid var(--line);border-radius:999px;padding:2px 8px;vertical-align:middle;letter-spacing:.04em}
+  button{font-family:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card2);color:var(--ink);border-radius:10px;padding:9px 14px;font-size:13px;font-weight:600}
+  button.green{background:#16A34A;border-color:#16A34A;color:#fff}
+  button.red{background:#B91C1C;border-color:#B91C1C;color:#fff}
+  button:disabled{opacity:.5;cursor:default}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  .chip{width:46px;height:46px;border-radius:50%;background:#26365A;border:2px solid var(--line);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--sub);position:relative;transition:box-shadow .15s,border-color .15s}
+  .chip.speaking{border-color:#22C55E;box-shadow:0 0 0 4px rgba(34,197,94,.25)}
+  .chip.muted::after{content:"🔇";position:absolute;bottom:-4px;right:-4px;font-size:12px}
+  .row{display:flex;gap:8px;align-items:center}
+  .ring{border:1px solid #D97706;background:#2A2A1E00;border-radius:12px;padding:10px 12px;margin-top:10px;display:flex;gap:10px;align-items:center;background:#3A3420}
+  #status{font-size:12.5px;color:var(--sub);margin-top:10px;min-height:16px}
+  .err{color:#FCA5A5}
+</style></head><body><div class="wrap">
+  <div class="card">
+    <h1>📞 Support Hub — Calls <span class="pill">V17.6e</span></h1>
+    <div class="sub" id="who">Connecting…</div>
+    <div class="chips" id="chips"></div>
+    <div class="row" id="ctl" style="display:none">
+      <button id="muteBtn" onclick="muteTog()">🎙 Mute</button>
+      <button class="red" onclick="leave()">Leave call</button>
+    </div>
+    <div id="rings"></div>
+    <div id="status"></div>
+  </div>
+  <div class="card sub" style="font-size:11px">
+    Keep this window open while you talk. Closing it hangs up. Calls can't run
+    inside the hub itself (Google blocks the microphone there), so the hub
+    sends you here automatically... nothing extra to remember.
+  </div>
+</div>
+<script>
+"use strict";
+/* boot payload: #x=<base64 JSON {exec, me, intent}> */
+var CFG=null;
+(function(){
+  try{
+    var m=(location.hash||'').match(/x=([^&]+)/);
+    if(m)CFG=JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(m[1])))));
+  }catch(e){}
+  if(!CFG||!CFG.exec||!CFG.me){
+    document.getElementById('who').innerHTML='<span class="err">This window opens from the hub — start or answer a call there and it lands here with everything it needs.</span>';
+    CFG=null;
+  } else {
+    document.getElementById('who').textContent='Signed in as '+CFG.me;
+    try{history.replaceState(null,'',location.pathname);}catch(e){}
+  }
+})();
+function E(i){return document.getElementById(i);}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+function setStatus(t,bad){E('status').innerHTML=bad?'<span class="err">'+esc(t)+'</span>':esc(t);}
+function api(action,params){
+  var u=CFG.exec+(CFG.exec.indexOf('?')>-1?'&':'?')+'rtcapi='+encodeURIComponent(action)+'&name='+encodeURIComponent(CFG.me);
+  Object.keys(params||{}).forEach(function(k){u+='&'+k+'='+encodeURIComponent(params[k]);});
+  return fetch(u,{method:'GET'}).then(function(r){return r.json();});
+}
+
+var RTC_ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
+var C={id:'',label:'',members:[],mute:{},local:null,pcs:{},auds:{},anal:{},pollT:null};
+
+function micGet(ok){
+  if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){setStatus('This browser cannot open the microphone.',true);return;}
+  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})
+    .then(ok)
+    .catch(function(err){
+      if(err&&err.name==='NotFoundError')setStatus('No microphone was found... plug one in or check Windows sound settings.',true);
+      else setStatus('Microphone blocked ('+((err&&err.name)||'unknown')+'). Click the 🔒/🎙 icon by the address bar, choose Allow, then reload this window.',true);
+    });
+}
+function sigSend(to,type,data){api('signal',{call:C.id,to:to,type:type,payload:JSON.stringify(data||{})}).catch(function(){});}
+function mkPc(name){
+  if(C.pcs[name])return C.pcs[name];
+  var pc=new RTCPeerConnection(RTC_ICE);C.pcs[name]=pc;
+  try{(C.local.getTracks()||[]).forEach(function(t){pc.addTrack(t,C.local);});}catch(e){}
+  pc.onicecandidate=function(ev){if(ev.candidate)sigSend(name,'ice',{c:ev.candidate});};
+  pc.ontrack=function(ev){
+    var st=ev.streams&&ev.streams[0];if(!st)return;
+    var a=C.auds[name];
+    if(!a){a=document.createElement('audio');a.autoplay=true;document.body.appendChild(a);C.auds[name]=a;}
+    a.srcObject=st;glowWire(name,st);
+  };
+  return pc;
+}
+var AC=null;
+function glowWire(name,stream){
+  try{
+    AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+    var src=AC.createMediaStreamSource(stream),an=AC.createAnalyser();
+    an.fftSize=512;src.connect(an);C.anal[name]={an:an,buf:new Uint8Array(an.frequencyBinCount)};
+  }catch(e){}
+}
+setInterval(function(){
+  Object.keys(C.anal).forEach(function(n){
+    var o=C.anal[n];o.an.getByteTimeDomainData(o.buf);
+    var s=0;for(var i=0;i<o.buf.length;i++){var v=(o.buf[i]-128)/128;s+=v*v;}
+    var on=Math.sqrt(s/o.buf.length)>0.045&&!C.mute[n];
+    var el=document.querySelector('.chip[data-n="'+CSS.escape(n)+'"]');
+    if(el)el.classList.toggle('speaking',on);
+  });
+},180);
+function ini(n){return n.split(/\s+/).map(function(w){return w.charAt(0);}).join('').slice(0,2).toUpperCase();}
+function paint(){
+  var ch=E('chips');ch.innerHTML=(C.members||[]).map(function(n){
+    return '<span class="chip'+(C.mute[n]?' muted':'')+'" data-n="'+esc(n)+'" title="'+esc(n)+'">'+esc(ini(n))+'</span>';
+  }).join('');
+  E('ctl').style.display=C.id?'flex':'none';
+  E('muteBtn').textContent=C.mute[CFG.me]?'🔊 Unmute':'🎙 Mute';
+  document.title=C.id?('🟢 '+(C.label||'On a call')+' — Support Hub'):'Support Hub — Calls';
+}
+function attach(call){
+  C.id=call.id;C.label=call.label||'Voice call';C.members=call.members||[];C.mute=call.mute||{};
+  paint();setStatus('On the call. Keep this window open while you talk.');
+  if(!C.pollT)C.pollT=setInterval(tick,2000);
+}
+function handleSig(s){
+  try{
+    var d=JSON.parse(s.payload||'{}'),from=s.from;
+    if(s.type==='offer'){var pc=mkPc(from);
+      pc.setRemoteDescription(new RTCSessionDescription(d.sdp)).then(function(){return pc.createAnswer();})
+        .then(function(a){return pc.setLocalDescription(a);})
+        .then(function(){sigSend(from,'answer',{sdp:pc.localDescription});}).catch(function(){});}
+    else if(s.type==='answer'){var pc2=C.pcs[from];if(pc2)pc2.setRemoteDescription(new RTCSessionDescription(d.sdp)).catch(function(){});}
+    else if(s.type==='ice'){var pc3=C.pcs[from];if(pc3&&d.c)pc3.addIceCandidate(new RTCIceCandidate(d.c)).catch(function(){});}
+    else if(s.type==='bye'){dropPeer(from);}
+  }catch(e){}
+}
+function dropPeer(n){
+  try{if(C.pcs[n])C.pcs[n].close();}catch(e){}
+  delete C.pcs[n];delete C.anal[n];
+  if(C.auds[n]){try{C.auds[n].remove();}catch(e){}delete C.auds[n];}
+}
+function tick(){
+  if(!C.id)return;
+  api('poll',{call:C.id}).then(function(r){
+    if(!r||!r.success)return;
+    if(r.ended){teardown();setStatus('The call ended.');return;}
+    if(r.call){C.members=r.call.members||C.members;C.mute=r.call.mute||C.mute;C.label=r.call.label||C.label;paint();
+      Object.keys(C.pcs).forEach(function(n){if(C.members.indexOf(n)===-1)dropPeer(n);});}
+    (r.signals||[]).forEach(handleSig);
+    paintRings(r.ringing||[]);
+  }).catch(function(){});
+}
+function idleTick(){
+  if(C.id||!CFG)return;
+  api('rings',{}).then(function(r){paintRings((r&&r.ringing)||[]);}).catch(function(){});
+}
+setInterval(idleTick,4000);
+function paintRings(list){
+  var mine=(list||[]).filter(function(x){return x.id!==C.id;});
+  E('rings').innerHTML=mine.map(function(x){
+    return '<div class="ring">📞 <b>'+esc(x.from||'Someone')+'</b>&nbsp;·&nbsp;'+esc(x.label||'Voice call')+
+      '<span style="flex:1"></span><button class="green" onclick="accept(\''+esc(x.id)+'\')">Accept</button></div>';
+  }).join('');
+}
+function begin(ppl,label,tid){
+  micGet(function(st){C.local=st;glowWire(CFG.me,st);
+    setStatus('Ringing…');
+    api('start',{ppl:JSON.stringify(ppl||[]),label:label||'Voice call',tid:tid||''}).then(function(r){
+      if(r&&r.success){attach(r.call);}
+      else{teardown();setStatus((r&&r.message)||'Call failed to start.',true);}
+    }).catch(function(){teardown();setStatus('Server unreachable... try again.',true);});
+  });
+}
+function accept(callId){
+  micGet(function(st){C.local=st;glowWire(CFG.me,st);
+    api('join',{call:callId}).then(function(r){
+      if(r&&r.success){attach(r.call);
+        (r.call.members||[]).forEach(function(n){
+          if(n.toLowerCase()===CFG.me.toLowerCase())return;
+          var pc=mkPc(n);
+          pc.createOffer().then(function(o){return pc.setLocalDescription(o);})
+            .then(function(){sigSend(n,'offer',{sdp:pc.localDescription});}).catch(function(){});
+        });
+      }
+      else if(r&&r.full){teardown();setStatus('That call is full... mesh audio holds 8 people.',true);}
+      else{teardown();setStatus((r&&r.message)||'Could not join.',true);}
+    }).catch(function(){teardown();setStatus('Server unreachable... try again.',true);});
+  });
+}
+function muteTog(){
+  var on=!C.mute[CFG.me];C.mute[CFG.me]=on;
+  try{(C.local.getAudioTracks()||[]).forEach(function(t){t.enabled=!on;});}catch(e){}
+  paint();api('mute',{call:C.id,on:on?'1':'0'}).catch(function(){});
+}
+function leave(){
+  var id=C.id;
+  Object.keys(C.pcs).forEach(function(n){sigSend(n,'bye',{});});
+  api('leave',{call:id}).catch(function(){});
+  teardown();setStatus('You left the call. You can close this window.');
+}
+function teardown(){
+  Object.keys(C.pcs).forEach(dropPeer);
+  try{(C.local&&C.local.getTracks()||[]).forEach(function(t){t.stop();});}catch(e){}
+  C.id='';C.label='';C.members=[];C.mute={};C.local=null;
+  if(C.pollT){clearInterval(C.pollT);C.pollT=null;}
+  paint();
+}
+window.addEventListener('beforeunload',function(){if(C.id){try{navigator.sendBeacon&&api('leave',{call:C.id});}catch(e){}}});
+/* run the intent the hub sent us */
+if(CFG&&CFG.intent){
+  var it=CFG.intent;
+  if(it.t==='new')begin(it.ppl||[],it.label||'Voice call',it.tid||'');
+  else if(it.t==='accept')accept(it.id);
+}else if(CFG){setStatus('Waiting... start or answer a call from the hub and it connects here.');}
+</script></body></html>
