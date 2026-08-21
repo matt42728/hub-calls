@@ -1,247 +1,501 @@
-<!DOCTYPE html>
-<!-- SME Hub — CALLS WINDOW · V17.6g
-     Why this file exists: Google's Apps Script web-app wrapper serves every
-     hub page inside a sandboxed iframe whose allow-list has NO 'microphone'
-     entry (verified in the live DOM, 8/20). The browser therefore refuses the
-     mic inside ANY hub view, no matter what the person allows in settings.
-     This page is the workaround: it is hosted OUTSIDE Apps Script (GitHub
-     Pages or any static host), runs top-level, and speaks to the same backend
-     through the rtcapi JSON bridge — over POST, because SDP offers run
-     kilobytes past what a GET query string can safely carry.
-     Setup (once): host this file anywhere public, then paste its URL into
-     Manager Hub / OPS / Override / "Calls window URL". Done. -->
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Support Hub — Calls</title>
-<style>
-  :root{--bg:#192640;--card:#22314F;--card2:#1D2A46;--line:#2C3E64;--ink:#F2F6FC;--sub:#C3D0E6;--mut:#8FA3C4}
-  *{box-sizing:border-box}
-  body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(180deg,#192640,#1D2C4C);color:var(--ink);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-  .wrap{width:min(460px,94vw)}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:12px}
-  h1{font-size:16px;margin:0 0 2px}
-  .sub{font-size:11.5px;color:var(--mut)}
-  .pill{display:inline-block;font-size:10px;font-weight:800;background:#26365A;color:var(--sub);border:1px solid var(--line);border-radius:999px;padding:2px 8px;vertical-align:middle;letter-spacing:.04em}
-  button{font-family:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card2);color:var(--ink);border-radius:10px;padding:9px 14px;font-size:13px;font-weight:600}
-  button.green{background:#16A34A;border-color:#16A34A;color:#fff}
-  button.red{background:#B91C1C;border-color:#B91C1C;color:#fff}
-  button:disabled{opacity:.5;cursor:default}
-  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
-  .chip{width:46px;height:46px;border-radius:50%;background:#26365A;border:2px solid var(--line);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--sub);position:relative;transition:box-shadow .15s,border-color .15s}
-  .chip.speaking{border-color:#22C55E;box-shadow:0 0 0 4px rgba(34,197,94,.25)}
-  .chip.muted::after{content:"🔇";position:absolute;bottom:-4px;right:-4px;font-size:12px}
-  .row{display:flex;gap:8px;align-items:center}
-  .ring{border:1px solid #D97706;border-radius:12px;padding:10px 12px;margin-top:10px;display:flex;gap:10px;align-items:center;background:#3A3420}
-  #status{font-size:12.5px;color:var(--sub);margin-top:10px;min-height:16px}
-  .err{color:#FCA5A5}
-</style></head><body><div class="wrap">
-  <div class="card">
-    <h1>📞 Support Hub — Calls <span class="pill">V17.6g</span></h1>
-    <div class="sub" id="who">Connecting…</div>
-    <div class="chips" id="chips"></div>
-    <div class="row" id="ctl" style="display:none">
-      <button id="muteBtn" onclick="muteTog()">🎙 Mute</button>
-      <button class="red" onclick="leave()">Leave call</button>
-    </div>
-    <div id="rings"></div>
-    <button id="soundGate" class="green" style="display:none;width:100%;margin-top:10px" onclick="soundGo()">🔊 Tap once to enable sound</button>
-    <div id="status"></div>
-  </div>
-  <div class="card sub" style="font-size:11px">
-    Keep this window open while you talk. Closing it hangs up. Calls can't run
-    inside the hub itself (Google blocks the microphone there), so the hub
-    sends you here automatically... nothing extra to remember.
-  </div>
-</div>
-<script>
-"use strict";
-/* boot payload: #x=<base64 JSON {exec, me, intent}> */
-var CFG=null;
-(function(){
-  try{
-    var m=(location.hash||'').match(/x=([^&]+)/);
-    if(m)CFG=JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(m[1])))));
-  }catch(e){}
-  if(!CFG||!CFG.exec||!CFG.me){
-    document.getElementById('who').innerHTML='<span class="err">This window opens from the hub — start or answer a call there and it lands here with everything it needs.</span>';
-    CFG=null;
-  } else {
-    document.getElementById('who').textContent='Signed in as '+CFG.me;
-    try{history.replaceState(null,'',location.pathname);}catch(e){}
-  }
-})();
-function E(i){return document.getElementById(i);}
-function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
-function setStatus(t,bad){E('status').innerHTML=bad?'<span class="err">'+esc(t)+'</span>':esc(t);}
-function api(action,params){
-  var body={rtcapi:action,name:CFG.me};
-  Object.keys(params||{}).forEach(function(k){body[k]=params[k];});
-  return fetch(CFG.exec,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body)})
-    .then(function(r){return r.json();});
-}
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  📞 CallService.gs — V18 PROVIDER CALLS (JaaS primary · Daily fallback)
+ *  ---------------------------------------------------------------------------
+ *  Replaces the V17.6 WebRTC mesh with managed providers:
+ *    • 8x8 JaaS  (unlimited minutes, 25 free MAU)  — DEFAULT
+ *    • Daily.co  (10,000 free participant-minutes) — auto-fallback
+ *  The three apps are UNTOUCHED — they already send every call action to the
+ *  hosted calls window (hub-calls.html) via callsPop(). This file serves that
+ *  window through the ?callapi= JSON bridge (see the doGet patch), keeps the
+ *  in-app ringing alive by writing the same rtc cache records V17.6 used, and
+ *  runs the cost governor (MAU ledger, minute meter, Slack alerts).
+ *
+ *  Script Properties required (Project Settings ▸ Script Properties):
+ *    JAAS_APP_ID       vpaas-magic-cookie-xxxxx
+ *    JAAS_API_KEY_ID   vpaas-magic-cookie-xxxxx/abc123   (the one WITH the /)
+ *    JAAS_PRIVATE_KEY  full contents of the downloaded .pk file (ugly is fine)
+ *    DAILY_API_KEY     Daily dashboard ▸ Developers
+ *    DAILY_SUBDOMAIN   e.g. turner-support-hub
+ *
+ *  Sheets auto-created on first use (never pre-build them):
+ *    📞 Call Admin   — key/value settings (edit values in col B, live at once)
+ *    📞 Call MAU     — one row per unique person per month (our early-warning
+ *                      ledger; provider consoles remain the billing truth)
+ *    📞 Call Usage   — one row per participant-minute heartbeat (audit trail)
+ *    📞 Call Events  — raw JaaS webhook receipts (their side of the story)
+ *  ═══════════════════════════════════════════════════════════════════════ */
 
-var RTC_ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
-var C={id:'',label:'',members:[],mute:{},local:null,pcs:{},auds:{},anal:{},pollT:null};
+var CSVC_TTL = 14400; // mirror RTC_TTL — call rows live 4h in cache
 
-function micGet(ok){
-  if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){setStatus('This browser cannot open the microphone.',true);return;}
-  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})
-    .then(ok)
-    .catch(function(err){
-      if(err&&err.name==='NotFoundError')setStatus('No microphone was found... plug one in or check Windows sound settings.',true);
-      else setStatus('Microphone blocked ('+((err&&err.name)||'unknown')+'). Click the 🔒/🎙 icon by the address bar, choose Allow, then reload this window.',true);
+/* ── Admin settings (📞 Call Admin sheet, key/value) ──────────────────── */
+var CSVC_DEFAULTS = {
+  PROVIDER_MODE : 'AUTO',   // AUTO | JAAS | DAILY
+  MAU_TRIGGER   : 20,       // switch new calls to Daily at this est. MAU
+  MAU_LIMIT     : 25,       // JaaS free ceiling (info + alerts)
+  DAILY_FREE_MIN: 10000,    // Daily free participant-minutes / month
+  ALERT_PERSON  : '',       // roster name to DM governor alerts (Matthew)
+  ALERT_STEP_USD: 5,        // alert every $N estimated past the free pools
+  GRACE_MODE    : 'ON',     // ON = alert only, never restrict
+  MAX_PARTICIPANTS: 20,
+  ROOM_EXP_MIN  : 240,      // provider room lifetime (anti-camping backstop)
+  GUEST_LINKS   : 'ON',     // OFF hides Copy-guest-link on the calls page
+  NO_SHARE_NAMES: '',       // comma list — these people cannot screen share
+};
+
+function csvcAdminSheet_() {
+  const ss = getSpreadsheet();
+  let sh = ss.getSheetByName('📞 Call Admin');
+  if (!sh) {
+    sh = ss.insertSheet('📞 Call Admin');
+    sh.getRange(1,1,1,3).setValues([['Setting','Value','What it does']])
+      .setFontWeight('bold').setBackground('#1a1a2e').setFontColor('#FFFFFF');
+    const notes = {
+      PROVIDER_MODE:'AUTO lets the governor pick. JAAS or DAILY forces one.',
+      MAU_TRIGGER:'New calls route to Daily once this many unique people (est.) have joined this month.',
+      MAU_LIMIT:'JaaS free ceiling — info only, used for alert wording.',
+      DAILY_FREE_MIN:'Daily free participant-minutes per month.',
+      ALERT_PERSON:'Roster name that receives governor Slack DMs. Empty = alerts only logged.',
+      ALERT_STEP_USD:'After the free pools, DM every time est. spend crosses another $N.',
+      GRACE_MODE:'ON = track & alert but never restrict. OFF reserved for future policies.',
+      MAX_PARTICIPANTS:'Cap per room.',
+      ROOM_EXP_MIN:'Rooms self-expire after this many minutes (anti-camping backstop).',
+      GUEST_LINKS:'OFF removes the Copy-guest-link button on the calls window.',
+      NO_SHARE_NAMES:'Comma-separated roster names blocked from screen sharing.',
+    };
+    const rows = Object.keys(CSVC_DEFAULTS).map(function(k){
+      return [k, CSVC_DEFAULTS[k], notes[k]||''];
     });
+    sh.getRange(2,1,rows.length,3).setValues(rows);
+    sh.setColumnWidth(1,170); sh.setColumnWidth(2,220); sh.setColumnWidth(3,460);
+  }
+  return sh;
 }
-function sigSend(to,type,data){api('signal',{call:C.id,to:to,type:type,payload:JSON.stringify(data||{})}).catch(function(){});}
-function mkPc(name){
-  if(C.pcs[name])return C.pcs[name];
-  var pc=new RTCPeerConnection(RTC_ICE);C.pcs[name]=pc;
-  try{(C.local.getTracks()||[]).forEach(function(t){pc.addTrack(t,C.local);});}catch(e){}
-  pc.onicecandidate=function(ev){if(ev.candidate)sigSend(name,'ice',{c:ev.candidate});};
-  pc.ontrack=function(ev){
-    var st=ev.streams&&ev.streams[0];if(!st)return;
-    var a=C.auds[name];
-    if(!a){a=document.createElement('audio');a.autoplay=true;document.body.appendChild(a);C.auds[name]=a;}
-    a.srcObject=st;glowWire(name,st);
-    tryPlay(a);
+function csvcCfg_() {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get('csvc_cfg');
+  if (hit) { try { return JSON.parse(hit); } catch(e) {} }
+  const out = JSON.parse(JSON.stringify(CSVC_DEFAULTS));
+  try {
+    const vals = csvcAdminSheet_().getDataRange().getValues();
+    for (let i = 1; i < vals.length; i++) {
+      const k = String(vals[i][0]||'').trim();
+      if (k && CSVC_DEFAULTS.hasOwnProperty(k)) out[k] = vals[i][1];
+    }
+  } catch(e) {}
+  out.MAU_TRIGGER    = Number(out.MAU_TRIGGER)||20;
+  out.MAU_LIMIT      = Number(out.MAU_LIMIT)||25;
+  out.DAILY_FREE_MIN = Number(out.DAILY_FREE_MIN)||10000;
+  out.ALERT_STEP_USD = Number(out.ALERT_STEP_USD)||5;
+  out.MAX_PARTICIPANTS = Math.max(2, Number(out.MAX_PARTICIPANTS)||20);
+  out.ROOM_EXP_MIN   = Math.max(15, Number(out.ROOM_EXP_MIN)||240);
+  out.noShare = String(out.NO_SHARE_NAMES||'').split(',')
+    .map(function(s){ return s.trim().toLowerCase(); }).filter(String);
+  try { cache.put('csvc_cfg', JSON.stringify(out), 60); } catch(e) {}
+  return out;
+}
+
+/* ── Small utilities ──────────────────────────────────────────────────── */
+function csvcProps_() { return PropertiesService.getScriptProperties(); }
+function csvcMonth_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMM');
+}
+function csvcJson_(o) {
+  return ContentService.createTextOutput(JSON.stringify(o))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+function csvcB64u_(bytesOrStr) {
+  const b = (typeof bytesOrStr === 'string') ? Utilities.newBlob(bytesOrStr).getBytes() : bytesOrStr;
+  return Utilities.base64EncodeWebSafe(b).replace(/=+$/,'');
+}
+function csvcSecret_() {
+  const p = csvcProps_();
+  let s = p.getProperty('CSVC_SECRET');
+  if (!s) { s = Utilities.getUuid() + Utilities.getUuid(); p.setProperty('CSVC_SECRET', s); }
+  return s;
+}
+function csvcSign_(s) {
+  return csvcB64u_(Utilities.computeHmacSha256Signature(s, csvcSecret_()));
+}
+
+/* ── JaaS RS256 JWT ───────────────────────────────────────────────────────
+ *  The downloaded .pk pastes as one ugly line — csvcPem_ rebuilds a legal
+ *  PKCS#8 PEM from whatever formatting survived the clipboard. */
+function csvcPem_(raw) {
+  let s = String(raw||'').replace(/\\n/g,'\n');
+  s = s.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----/g,'')
+       .replace(/-----END [A-Z ]*PRIVATE KEY-----/g,'')
+       .replace(/[^A-Za-z0-9+/=]/g,'');
+  const lines = s.match(/.{1,64}/g) || [];
+  return '-----BEGIN PRIVATE KEY-----\n' + lines.join('\n') + '\n-----END PRIVATE KEY-----\n';
+}
+function csvcJaasJwt_(userName, moderator, canShare) {
+  const p = csvcProps_();
+  const appId = String(p.getProperty('JAAS_APP_ID')||'').trim();
+  const kid   = String(p.getProperty('JAAS_API_KEY_ID')||'').trim();
+  const pem   = csvcPem_(p.getProperty('JAAS_PRIVATE_KEY'));
+  if (!appId || !kid || pem.length < 200) return null;
+  const now = Math.floor(Date.now()/1000);
+  const header  = { alg:'RS256', kid:kid, typ:'JWT' };
+  const payload = {
+    aud:'jitsi', iss:'chat', sub:appId, room:'*',
+    nbf: now - 10, exp: now + 7200,
+    context: {
+      user: { id: csvcSign_('u|'+userName).slice(0,24), name: String(userName||'Guest').slice(0,60),
+              email: '', moderator: moderator ? 'true' : 'false' },
+      features: { livestreaming:'false', recording:'false', transcription:'false',
+                  'outbound-call':'false', 'sip-outbound-call':'false' },
+    },
   };
-  pc.oniceconnectionstatechange=function(){
-    var s=pc.iceConnectionState;
-    if(s==='connected'||s==='completed'){setStatus('Connected... keep this window open while you talk.');}
-    else if(s==='failed'){setStatus('Audio path to '+name+' could not connect... usually a strict firewall or VPN. Both of you try disconnecting any VPN, then hang up & call again.',true);}
-    else if(s==='disconnected'){setStatus('Connection to '+name+' hiccuped... hold on, retrying');}
-  };
-  return pc;
+  const head = csvcB64u_(JSON.stringify(header));
+  const body = csvcB64u_(JSON.stringify(payload));
+  const sig  = Utilities.computeRsaSha256Signature(head + '.' + body, pem);
+  return head + '.' + body + '.' + csvcB64u_(sig);
 }
-var AC=null,needGate=false;
-function gateShow(){needGate=true;var b=E('soundGate');if(b)b.style.display='block';}
-function soundGo(){
-  needGate=false;var b=E('soundGate');if(b)b.style.display='none';
-  try{if(AC&&AC.state==='suspended')AC.resume();}catch(e){}
-  Object.keys(C.auds).forEach(function(n){tryPlay(C.auds[n]);});
+
+/* ── Daily REST ───────────────────────────────────────────────────────── */
+function csvcDailyFetch_(path, payload) {
+  const key = String(csvcProps_().getProperty('DAILY_API_KEY')||'').trim();
+  if (!key) return null;
+  try {
+    const res = UrlFetchApp.fetch('https://api.daily.co/v1/' + path, {
+      method:'post', contentType:'application/json',
+      headers:{ Authorization:'Bearer ' + key },
+      payload: JSON.stringify(payload), muteHttpExceptions:true,
+    });
+    const code = res.getResponseCode();
+    if (code < 200 || code >= 300) {
+      Logger.log('Daily ' + path + ' HTTP ' + code + ': ' + res.getContentText().slice(0,300));
+      return null;
+    }
+    return JSON.parse(res.getContentText());
+  } catch(e) { Logger.log('Daily ' + path + ' failed: ' + e); return null; }
 }
-function tryPlay(a){
-  try{var p=a.play();if(p&&p.catch)p.catch(function(){gateShow();});}catch(e){gateShow();}
-}
-function glowWire(name,stream){
-  try{
-    AC=AC||new (window.AudioContext||window.webkitAudioContext)();
-    if(AC.state==='suspended'){AC.resume().catch(function(){gateShow();});setTimeout(function(){if(AC.state==='suspended')gateShow();},800);}
-    var src=AC.createMediaStreamSource(stream),an=AC.createAnalyser();
-    an.fftSize=512;src.connect(an);C.anal[name]={an:an,buf:new Uint8Array(an.frequencyBinCount)};
-  }catch(e){}
-}
-setInterval(function(){
-  Object.keys(C.anal).forEach(function(n){
-    var o=C.anal[n];o.an.getByteTimeDomainData(o.buf);
-    var s=0;for(var i=0;i<o.buf.length;i++){var v=(o.buf[i]-128)/128;s+=v*v;}
-    var on=Math.sqrt(s/o.buf.length)>0.045&&!C.mute[n];
-    var el=document.querySelector('.chip[data-n="'+CSS.escape(n)+'"]');
-    if(el)el.classList.toggle('speaking',on);
-  });
-},180);
-function ini(n){return n.split(/\s+/).map(function(w){return w.charAt(0);}).join('').slice(0,2).toUpperCase();}
-function paint(){
-  var ch=E('chips');ch.innerHTML=(C.members||[]).map(function(n){
-    return '<span class="chip'+(C.mute[n]?' muted':'')+'" data-n="'+esc(n)+'" title="'+esc(n)+'">'+esc(ini(n))+'</span>';
-  }).join('');
-  E('ctl').style.display=C.id?'flex':'none';
-  E('muteBtn').textContent=C.mute[CFG.me]?'🔊 Unmute':'🎙 Mute';
-  document.title=C.id?('🟢 '+(C.label||'On a call')+' — Support Hub'):'Support Hub — Calls';
-}
-function attach(call){
-  C.id=call.id;C.label=call.label||'Voice call';C.members=call.members||[];C.mute=call.mute||{};
-  paint();setStatus('On the call. Keep this window open while you talk.');
-  if(!C.pollT)C.pollT=setInterval(tick,2000);
-}
-function handleSig(s){
-  try{
-    var d=JSON.parse(s.payload||'{}'),from=s.from;
-    if(s.type==='offer'){var pc=mkPc(from);
-      pc.setRemoteDescription(new RTCSessionDescription(d.sdp)).then(function(){return pc.createAnswer();})
-        .then(function(a){return pc.setLocalDescription(a);})
-        .then(function(){sigSend(from,'answer',{sdp:pc.localDescription});}).catch(function(){});}
-    else if(s.type==='answer'){var pc2=C.pcs[from];if(pc2)pc2.setRemoteDescription(new RTCSessionDescription(d.sdp)).catch(function(){});}
-    else if(s.type==='ice'){var pc3=C.pcs[from];if(pc3&&d.c)pc3.addIceCandidate(new RTCIceCandidate(d.c)).catch(function(){});}
-    else if(s.type==='bye'){dropPeer(from);}
-  }catch(e){}
-}
-function dropPeer(n){
-  try{if(C.pcs[n])C.pcs[n].close();}catch(e){}
-  delete C.pcs[n];delete C.anal[n];
-  if(C.auds[n]){try{C.auds[n].remove();}catch(e){}delete C.auds[n];}
-}
-function tick(){
-  if(!C.id)return;
-  api('poll',{call:C.id}).then(function(r){
-    if(!r||!r.success)return;
-    if(r.ended){teardown();setStatus('The call ended.');return;}
-    if(r.call){C.members=r.call.members||C.members;C.mute=r.call.mute||C.mute;C.label=r.call.label||C.label;paint();
-      Object.keys(C.pcs).forEach(function(n){if(C.members.indexOf(n)===-1)dropPeer(n);});}
-    (r.signals||[]).forEach(handleSig);
-    paintRings(r.ringing||[]);
-  }).catch(function(){});
-}
-function idleTick(){
-  if(C.id||!CFG)return;
-  api('rings',{}).then(function(r){paintRings((r&&r.ringing)||[]);}).catch(function(){});
-}
-setInterval(idleTick,4000);
-function paintRings(list){
-  var mine=(list||[]).filter(function(x){return x.id!==C.id;});
-  E('rings').innerHTML=mine.map(function(x){
-    return '<div class="ring">📞 <b>'+esc(x.from||'Someone')+'</b>&nbsp;·&nbsp;'+esc(x.label||'Voice call')+
-      '<span style="flex:1"></span><button class="green" onclick="accept(\''+esc(x.id)+'\')">Accept</button></div>';
-  }).join('');
-}
-function begin(ppl,label,tid){
-  micGet(function(st){C.local=st;glowWire(CFG.me,st);
-    setStatus('Ringing…');
-    api('start',{ppl:JSON.stringify(ppl||[]),label:label||'Voice call',tid:tid||''}).then(function(r){
-      if(r&&r.success){attach(r.call);}
-      else{teardown();setStatus((r&&r.message)||'Call failed to start.',true);}
-    }).catch(function(){teardown();setStatus('Server unreachable... try again.',true);});
+function csvcDailyRoom_(roomName, expMins, maxP) {
+  const exp = Math.floor(Date.now()/1000) + expMins*60;
+  return csvcDailyFetch_('rooms', {
+    name: roomName, privacy:'private',
+    properties:{ exp:exp, max_participants:maxP, enable_screenshare:true,
+                 enable_chat:true, start_video_off:true },
   });
 }
-function accept(callId){
-  micGet(function(st){C.local=st;glowWire(CFG.me,st);
-    api('join',{call:callId}).then(function(r){
-      if(r&&r.success){attach(r.call);
-        (r.call.members||[]).forEach(function(n){
-          if(n.toLowerCase()===CFG.me.toLowerCase())return;
-          var pc=mkPc(n);
-          pc.createOffer().then(function(o){return pc.setLocalDescription(o);})
-            .then(function(){sigSend(n,'offer',{sdp:pc.localDescription});}).catch(function(){});
-        });
-      }
-      else if(r&&r.full){teardown();setStatus('That call is full... mesh audio holds 8 people.',true);}
-      else{teardown();setStatus((r&&r.message)||'Could not join.',true);}
-    }).catch(function(){teardown();setStatus('Server unreachable... try again.',true);});
+function csvcDailyToken_(roomName, userName, isOwner, canShare, expMins) {
+  const exp = Math.floor(Date.now()/1000) + expMins*60;
+  const r = csvcDailyFetch_('meeting-tokens', {
+    properties:{ room_name:roomName, user_name:String(userName||'Guest').slice(0,60),
+                 exp:exp, is_owner:!!isOwner, enable_screenshare:!!canShare },
   });
+  return r && r.token ? r.token : null;
 }
-function muteTog(){
-  var on=!C.mute[CFG.me];C.mute[CFG.me]=on;
-  try{(C.local.getAudioTracks()||[]).forEach(function(t){t.enabled=!on;});}catch(e){}
-  paint();api('mute',{call:C.id,on:on?'1':'0'}).catch(function(){});
+
+/* ── Ledgers: MAU · minutes · events ──────────────────────────────────── */
+function csvcMauSheet_() {
+  const ss = getSpreadsheet();
+  let sh = ss.getSheetByName('📞 Call MAU');
+  if (!sh) { sh = ss.insertSheet('📞 Call MAU');
+    sh.appendRow(['Month','Key','Name','First seen']); sh.hideSheet(); }
+  return sh;
 }
-function leave(){
-  var id=C.id;
-  Object.keys(C.pcs).forEach(function(n){sigSend(n,'bye',{});});
-  api('leave',{call:id}).catch(function(){});
-  teardown();setStatus('You left the call. You can close this window.');
+function csvcUsageSheet_() {
+  const ss = getSpreadsheet();
+  let sh = ss.getSheetByName('📞 Call Usage');
+  if (!sh) { sh = ss.insertSheet('📞 Call Usage');
+    sh.appendRow(['When','Call','Provider','Key','Name']); sh.hideSheet(); }
+  return sh;
 }
-function teardown(){
-  Object.keys(C.pcs).forEach(dropPeer);
-  try{(C.local&&C.local.getTracks()||[]).forEach(function(t){t.stop();});}catch(e){}
-  C.id='';C.label='';C.members=[];C.mute={};C.local=null;
-  if(C.pollT){clearInterval(C.pollT);C.pollT=null;}
-  paint();
+function csvcEventsSheet_() {
+  const ss = getSpreadsheet();
+  let sh = ss.getSheetByName('📞 Call Events');
+  if (!sh) { sh = ss.insertSheet('📞 Call Events');
+    sh.appendRow(['When','Event','Room','Participant','Raw']); sh.hideSheet(); }
+  return sh;
 }
-window.addEventListener('beforeunload',function(){if(C.id){try{navigator.sendBeacon&&api('leave',{call:C.id});}catch(e){}}});
-/* run the intent the hub sent us */
-if(CFG&&CFG.intent){
-  var it=CFG.intent;
-  if(it.t==='new')begin(it.ppl||[],it.label||'Voice call',it.tid||'');
-  else if(it.t==='accept')accept(it.id);
-}else if(CFG){setStatus('Waiting... start or answer a call from the hub and it connects here.');}
-</script></body></html>
+/** Records a unique person for the month (our early-warning MAU estimate).
+ *  Returns the current distinct count for the month. */
+function csvcMauTouch_(key, name) {
+  const month = csvcMonth_();
+  const cacheK = 'csvc_mau_' + month;
+  const cache = CacheService.getScriptCache();
+  let seen = {};
+  try { seen = JSON.parse(cache.get(cacheK)||'{}'); } catch(e) {}
+  if (!seen[key]) {
+    const lock = LockService.getScriptLock();
+    if (lock.tryLock(3000)) {
+      try {
+        const sh = csvcMauSheet_();
+        const vals = sh.getDataRange().getValues();
+        seen = {};
+        for (let i = 1; i < vals.length; i++)
+          if (String(vals[i][0]) === month) seen[String(vals[i][1])] = 1;
+        if (!seen[key]) { sh.appendRow([month, key, name, new Date()]); seen[key] = 1; }
+        try { cache.put(cacheK, JSON.stringify(seen), 21600); } catch(e) {}
+      } finally { lock.releaseLock(); }
+    }
+  }
+  return Object.keys(seen).length;
+}
+function csvcMauCount_() {
+  const month = csvcMonth_();
+  try {
+    const hit = CacheService.getScriptCache().get('csvc_mau_' + month);
+    if (hit) return Object.keys(JSON.parse(hit)).length;
+  } catch(e) {}
+  let n = 0;
+  try {
+    const vals = csvcMauSheet_().getDataRange().getValues();
+    for (let i = 1; i < vals.length; i++) if (String(vals[i][0]) === csvcMonth_()) n++;
+  } catch(e) {}
+  return n;
+}
+/** One heartbeat = one participant-minute. Counters ride Script Properties
+ *  (cheap + atomic enough); rows append to the audit sheet. */
+function csvcMinuteTick_(callId, provider, key, name) {
+  const p = csvcProps_(), month = csvcMonth_();
+  const totK = 'CSVC_MIN_'  + month;            // all providers
+  const dayK = 'CSVC_DMIN_' + month;            // Daily-only minutes
+  try { p.setProperty(totK, String((Number(p.getProperty(totK))||0) + 1)); } catch(e) {}
+  if (provider === 'daily') {
+    try { p.setProperty(dayK, String((Number(p.getProperty(dayK))||0) + 1)); } catch(e) {}
+  }
+  try { csvcUsageSheet_().appendRow([new Date(), callId, provider, key, name]); } catch(e) {}
+}
+function csvcCounters_() {
+  const p = csvcProps_(), month = csvcMonth_();
+  return { totalMin: Number(p.getProperty('CSVC_MIN_'  + month))||0,
+           dailyMin: Number(p.getProperty('CSVC_DMIN_' + month))||0,
+           mau: csvcMauCount_() };
+}
+
+/* ── Governor: provider choice + Slack alerts ─────────────────────────── */
+function csvcPickProvider_(newNames) {
+  const cfg = csvcCfg_();
+  const mode = String(cfg.PROVIDER_MODE||'AUTO').toUpperCase();
+  const jaasReady  = !!csvcJaasJwt_('probe', false, false);
+  const dailyReady = !!String(csvcProps_().getProperty('DAILY_API_KEY')||'').trim();
+  if (mode === 'JAAS'  && jaasReady)  return 'jaas';
+  if (mode === 'DAILY' && dailyReady) return 'daily';
+  if (mode !== 'AUTO') Logger.log('Forced provider not configured — falling back to AUTO.');
+  // AUTO: JaaS until the est. MAU (current + anyone new on this call) would
+  // cross the trigger, then Daily for new rooms. Already-counted people are
+  // free on JaaS forever this month — the waterfall only guards NEW heads.
+  if (jaasReady) {
+    const month = csvcMonth_();
+    let seen = {};
+    try { seen = JSON.parse(CacheService.getScriptCache().get('csvc_mau_'+month)||'{}'); } catch(e) {}
+    if (!Object.keys(seen).length) { csvcMauCount_(); // warm cache from sheet
+      try { seen = JSON.parse(CacheService.getScriptCache().get('csvc_mau_'+month)||'{}'); } catch(e) {} }
+    let projected = Object.keys(seen).length;
+    (newNames||[]).forEach(function(n){
+      if (!seen['roster:' + String(n||'').trim().toLowerCase()]) projected++;
+    });
+    if (projected <= csvcCfg_().MAU_TRIGGER) return 'jaas';
+  }
+  if (dailyReady) return 'daily';
+  return jaasReady ? 'jaas' : null;
+}
+/** Governor alerts ride the SAME Slack workflow as chat alerts — identical
+ *  payload keys, so nothing new to build in Slack. Deduped per threshold. */
+function csvcAlert_(dedupeKey, text) {
+  const cache = CacheService.getScriptCache();
+  const k = 'csvc_al_' + csvcMonth_() + '_' + dedupeKey;
+  if (cache.get(k)) return;
+  try { cache.put(k, '1', 21600); } catch(e) {}
+  const cfg = csvcCfg_();
+  const who = String(cfg.ALERT_PERSON||'').trim();
+  Logger.log('📞 GOVERNOR: ' + text);
+  if (!who) return;
+  try {
+    const s = loadSettings();
+    if (!s || !s.webhookUrl) return;
+    UrlFetchApp.fetch(s.webhookUrl, {
+      method:'post', contentType:'application/json', muteHttpExceptions:true,
+      payload: JSON.stringify({
+        agent_name: who, slack_id: getAgentSlackId_(who),
+        requester: '📞 Call governor',
+        request_text: text, request_link: 'No link captured',
+        pending_count: '0', chat_type: '📞 Usage alert',
+      }),
+    });
+  } catch(e) { Logger.log('Governor DM failed (non-fatal): ' + e); }
+}
+function csvcGovernorCheck_() {
+  const cfg = csvcCfg_(), c = csvcCounters_();
+  if (c.mau >= cfg.MAU_TRIGGER)
+    csvcAlert_('mau_trig', '📞 Est. unique callers this month: ' + c.mau + ' of ' +
+      cfg.MAU_LIMIT + ' free (trigger ' + cfg.MAU_TRIGGER + '). New calls now route to Daily. ' +
+      'Verify the official tally in the JaaS console (Activity).');
+  if (c.mau >= cfg.MAU_LIMIT)
+    csvcAlert_('mau_limit', '📞 Est. unique callers reached ' + c.mau + ' — at/above the JaaS free ' +
+      'ceiling of ' + cfg.MAU_LIMIT + '. Extra unique joiners on JaaS ≈ $0.99 each. Check the console.');
+  const pct = c.dailyMin / Math.max(1, cfg.DAILY_FREE_MIN);
+  if (pct >= 0.8) csvcAlert_('d80', '📞 Daily fallback at ' + Math.round(pct*100) +
+    '% of its ' + cfg.DAILY_FREE_MIN + ' free minutes (' + c.dailyMin + ' used).');
+  if (pct >= 1.0) {
+    const overMin = c.dailyMin - cfg.DAILY_FREE_MIN;
+    const usd = overMin * 0.004;
+    csvcAlert_('d100', '📞 Daily free minutes EXHAUSTED — est. spend so far $' + usd.toFixed(2) +
+      ' this month (only bills if a card is on file; without one Daily may stop new rooms).');
+    const step = Math.floor(usd / Math.max(1, cfg.ALERT_STEP_USD));
+    if (step >= 1) csvcAlert_('usd' + step, '📞 Est. Daily spend crossed $' +
+      (step * cfg.ALERT_STEP_USD) + ' (now ≈ $' + usd.toFixed(2) + ').');
+  }
+}
+
+/* ── Call records — same cache shapes V17.6 ringing already reads ─────── */
+function csvcCallPut_(c)  { try { CacheService.getScriptCache().put('rtc_c_'+c.id, JSON.stringify(c), CSVC_TTL); } catch(e) {} }
+function csvcCallGet_(id) { try { const r = CacheService.getScriptCache().get('rtc_c_'+id); return r ? JSON.parse(r) : null; } catch(e) { return null; } }
+
+function csvcStart_(fromName, inviteesJson, label, threadId) {
+  fromName = String(fromName||'').trim();
+  if (!fromName) return { success:false, message:'Name required.' };
+  let inv = [];
+  try { inv = JSON.parse(inviteesJson||'[]') || []; } catch(e) {}
+  inv = inv.map(function(n){ return String(n).trim(); }).filter(String)
+           .filter(function(n){ return n.toLowerCase() !== fromName.toLowerCase(); }).slice(0,19);
+  if (!inv.length) return { success:false, message:'Pick at least one person to call.' };
+  label = String(label||'').trim().slice(0,60) || 'Voice call';
+  threadId = String(threadId||'').trim();
+  const cfg = csvcCfg_();
+  const provider = csvcPickProvider_([fromName].concat(inv));
+  if (!provider) return { success:false, message:'No call provider is configured — check Script Properties.' };
+
+  // Same one-step conversation flow rtcStart used.
+  const parts = [fromName].concat(inv);
+  const media = JSON.stringify([{ type:'call', label:label, by:fromName, at:Date.now() }]);
+  const sent = sendHubMessage(fromName, threadId, threadId ? null : parts, threadId ? null : 'twoway',
+    '📞 ' + fromName.split(' ')[0] + ' started a call — ' + label, '', media);
+  if (!sent || !sent.success) return sent || { success:false, message:'Could not open the conversation.' };
+  const tid = threadId || sent.threadId || '';
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { success:false, message:'Busy — try again.' };
+  try {
+    const id   = newId_('RC');
+    const room = 'hub-' + id.toLowerCase().replace(/[^a-z0-9-]/g,'');
+    if (provider === 'daily') {
+      const r = csvcDailyRoom_(room, cfg.ROOM_EXP_MIN, cfg.MAX_PARTICIPANTS);
+      if (!r) return { success:false, message:'Daily could not create the room — check the API key.' };
+    }
+    const call = { id:id, threadId:tid, by:fromName, label:label, started:Date.now(),
+                   invited:parts, members:{}, mute:{}, provider:provider, room:room };
+    call.members[fromName] = Date.now();
+    csvcCallPut_(call);
+    const reg = rtcReg_(); reg.push(id); rtcRegWrite_(reg);
+    try { CacheService.getScriptCache().put('hubcall_'+tid,
+      JSON.stringify({ by:fromName, label:label, started:call.started,
+                       joined:[fromName], rtcId:id }), CSVC_TTL); } catch(e) {}
+    const join = csvcJoinPayload_(call, fromName, true);
+    csvcMauTouch_('roster:' + fromName.toLowerCase(), fromName);
+    csvcGovernorCheck_();
+    return { success:true, callId:id, threadId:tid, provider:provider, join:join,
+             label:label, members:Object.keys(call.members) };
+  } finally { lock.releaseLock(); }
+}
+
+function csvcJoinPayload_(call, personName, isOwner) {
+  const cfg = csvcCfg_();
+  const canShare = cfg.noShare.indexOf(String(personName||'').trim().toLowerCase()) === -1;
+  if (call.provider === 'jaas') {
+    const appId = String(csvcProps_().getProperty('JAAS_APP_ID')||'').trim();
+    return { provider:'jaas', appId:appId, room:call.room,
+             jwt: csvcJaasJwt_(personName, !!isOwner, canShare), canShare:canShare,
+             label:call.label };
+  }
+  const sub = String(csvcProps_().getProperty('DAILY_SUBDOMAIN')||'').trim();
+  const tok = csvcDailyToken_(call.room, personName, !!isOwner, canShare, cfg.ROOM_EXP_MIN);
+  if (!tok) return null;
+  return { provider:'daily', url:'https://' + sub + '.daily.co/' + call.room + '?t=' + tok,
+           canShare:canShare, label:call.label };
+}
+
+function csvcJoin_(personName, callId, guestSig) {
+  personName = String(personName||'').trim();
+  const call = csvcCallGet_(String(callId||''));
+  if (!call) return { success:false, message:'That call has ended.' };
+  const isGuest = !!guestSig;
+  if (isGuest) {
+    if (csvcSign_('g|'+call.id) !== String(guestSig)) return { success:false, message:'Invalid guest link.' };
+    if (String(csvcCfg_().GUEST_LINKS).toUpperCase() !== 'ON') return { success:false, message:'Guest links are turned off.' };
+  }
+  if (Object.keys(call.members||{}).length >= csvcCfg_().MAX_PARTICIPANTS &&
+      !call.members[personName])
+    return { success:false, full:true, message:'That call is full.' };
+  call.members[personName] = call.members[personName] || Date.now();
+  csvcCallPut_(call);
+  try { CacheService.getScriptCache().put('hubcall_'+call.threadId,
+    JSON.stringify({ by:call.by, label:call.label, started:call.started,
+                     joined:Object.keys(call.members), rtcId:call.id }), CSVC_TTL); } catch(e) {}
+  const join = csvcJoinPayload_(call, personName, !isGuest &&
+    personName.toLowerCase() === String(call.by||'').toLowerCase());
+  if (!join) return { success:false, message:'Could not mint a join token — try again.' };
+  const key = isGuest ? ('guest:' + csvcSign_('d|'+personName).slice(0,12))
+                      : ('roster:' + personName.toLowerCase());
+  csvcMauTouch_(key, personName + (isGuest ? ' (guest)' : ''));
+  csvcGovernorCheck_();
+  return { success:true, callId:call.id, provider:call.provider, join:join,
+           label:call.label, members:Object.keys(call.members),
+           guestOk: String(csvcCfg_().GUEST_LINKS).toUpperCase() === 'ON' };
+}
+
+function csvcLeave_(personName, callId) {
+  const call = csvcCallGet_(String(callId||''));
+  if (!call) return { success:true };
+  delete call.members[String(personName||'').trim()];
+  csvcCallPut_(call);
+  try { CacheService.getScriptCache().put('hubcall_'+call.threadId,
+    JSON.stringify({ by:call.by, label:call.label, started:call.started,
+                     joined:Object.keys(call.members), rtcId:call.id }), CSVC_TTL); } catch(e) {}
+  return { success:true };
+}
+
+function csvcGuestLink_(personName, callId) {
+  const call = csvcCallGet_(String(callId||''));
+  if (!call) return { success:false, message:'That call has ended.' };
+  if (String(csvcCfg_().GUEST_LINKS).toUpperCase() !== 'ON')
+    return { success:false, message:'Guest links are turned off in 📞 Call Admin.' };
+  const page = String(csvcProps_().getProperty('CALLS_PAGE_URL')||'').trim();
+  const exec = (function(){ try { return ScriptApp.getService().getUrl()||''; } catch(e){ return ''; } })();
+  if (!page) return { success:false, message:'Calls page URL is not set.' };
+  const pay = { exec:exec, call:call.id, sig:csvcSign_('g|'+call.id), label:call.label };
+  const link = page + '#g=' + encodeURIComponent(
+    Utilities.base64Encode(JSON.stringify(pay)).replace(/=+$/,''));
+  return { success:true, link:link };
+}
+
+/* ── JSON bridge (wired from the doGet patch) ─────────────────────────── */
+function callSvcApi_(P) {
+  try {
+    const a  = String(P.callapi||'');
+    const nm = String(P.name||'').trim();
+    if (a === 'start') return csvcJson_(csvcStart_(nm, String(P.ppl||'[]'),
+      String(P.label||'Voice call'), String(P.tid||'')));
+    if (a === 'join')  return csvcJson_(csvcJoin_(nm, String(P.call||''), String(P.sig||'')));
+    if (a === 'leave') return csvcJson_(csvcLeave_(nm, String(P.call||'')));
+    if (a === 'guestlink') return csvcJson_(csvcGuestLink_(nm, String(P.call||'')));
+    if (a === 'hb') {
+      const call = csvcCallGet_(String(P.call||''));
+      if (call) csvcMinuteTick_(call.id, call.provider,
+        String(P.key||('roster:'+nm.toLowerCase())), nm||'Guest');
+      csvcGovernorCheck_();
+      return csvcJson_({ success:true });
+    }
+    if (a === 'status') { const c = csvcCounters_(), cfg = csvcCfg_();
+      return csvcJson_({ success:true, month:csvcMonth_(), mau:c.mau, mauLimit:cfg.MAU_LIMIT,
+        mauTrigger:cfg.MAU_TRIGGER, totalMin:c.totalMin, dailyMin:c.dailyMin,
+        dailyFree:cfg.DAILY_FREE_MIN }); }
+    return csvcJson_({ success:false, message:'unknown callapi' });
+  } catch(err) { return csvcJson_({ success:false, message:String(err) }); }
+}
+
+/* ── JaaS webhook receiver (wired from the doPost patch) ──────────────────
+ *  JaaS console ▸ Webhooks ▸ add the web-app /exec URL. Every receipt lands
+ *  in 📞 Call Events — the provider-side truth for reconciling our estimate. */
+function callSvcWebhook_(data) {
+  try {
+    const ev   = String(data.eventType || data.event || '').slice(0,60);
+    const fqn  = String(data.fqn || (data.data && data.data.fqn) || '').slice(0,120);
+    const who  = String((data.data && (data.data.name || data.data.participantId)) || '').slice(0,80);
+    csvcEventsSheet_().appendRow([new Date(), ev, fqn, who,
+      JSON.stringify(data).slice(0,900)]);
+  } catch(e) { Logger.log('JaaS webhook log failed: ' + e); }
+  return ContentService.createTextOutput('ok');
+}
