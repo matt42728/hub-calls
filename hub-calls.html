@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!DOCTYPE html><!-- hub-calls v2 (V17.6j) — guest-link copy fix: pre-fetched link, in-gesture copy, always-visible select bar -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -134,14 +134,37 @@
   function wireGuestBtn(res){
     if(S.guestSig||!res.guestOk&&res.guestOk!==undefined)return;
     var b=E('guestBtn');b.style.display='';
+    /* V17.6j — THE DEAD COPY BUTTON FIX (Firefox). The old handler fetched the
+       link FIRST and copied after — but Firefox revokes clipboard permission
+       the moment an async hop happens after the click, so the button silently
+       did nothing. Now the link is pre-fetched when the call embeds (the click
+       copies inside its own gesture), and the link ALWAYS appears on screen in
+       a select-and-copy bar too, so no browser can leave you empty-handed. */
+    api({callapi:'guestlink',call:S.callId,name:S.me},function(r){
+      if(r&&r.success)S.guestLink=r.link;});
+    function showBar(link){
+      var bar=E('glBar');
+      if(!bar){bar=document.createElement('div');bar.id='glBar';
+        bar.style.cssText='position:fixed;top:52px;left:50%;transform:translateX(-50%);z-index:80;background:#141F38;border:1px solid #2C3E64;border-radius:10px;padding:8px 10px;display:flex;gap:8px;align-items:center;max-width:92vw;box-shadow:0 12px 34px rgba(0,0,0,.5)';
+        document.body.appendChild(bar);}
+      bar.innerHTML='<input id="glIn" readonly style="width:min(440px,70vw);padding:6px 8px;border-radius:7px;border:1px solid #2C3E64;background:#1D2A46;color:#F2F6FC;font-size:12px">'+
+        '<button class="b-ghost" onclick="this.parentNode.remove()">\u2715</button>';
+      var i=E('glIn');i.value=link;i.focus();i.select();
+      i.onclick=function(){this.select();};
+      try{document.execCommand('copy');}catch(e){}}
+    function go(link){
+      showBar(link);
+      try{if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(link).then(
+          function(){toast('\ud83d\udd17 Guest link copied \u2014 anyone with it can join this call.');},
+          function(){toast('Copy was blocked \u2014 the link is on screen, select & copy it.');});
+        return;}}catch(e){}
+      toast('The link is on screen \u2014 select & copy it.');}
     b.onclick=function(){
+      if(S.guestLink){go(S.guestLink);return;}
       api({callapi:'guestlink',call:S.callId,name:S.me},function(r){
         if(!r.success){toast(r.message||'Guest links are unavailable.');return;}
-        var done=function(){toast('🔗 Guest link copied — anyone with it can join this call.');};
-        if(navigator.clipboard&&navigator.clipboard.writeText)
-          navigator.clipboard.writeText(r.link).then(done,function(){prompt('Copy this link:',r.link);});
-        else prompt('Copy this link:',r.link);
-      });};}
+        S.guestLink=r.link;go(r.link);});};}
 
   /* ── boot ────────────────────────────────────────────────────────────── */
   function bootRoster(pay){
