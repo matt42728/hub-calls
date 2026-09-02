@@ -53,7 +53,7 @@
 <script>
 (function(){
   'use strict';
-  var S={exec:'',me:'',callId:'',provider:'',guestSig:'',rk:false,hbT:null,api:null,left:false};
+  var S={exec:'',me:'',callId:'',provider:'',guestSig:'',hbT:null,api:null,left:false};
   function E(id){return document.getElementById(id);}
   function toast(m){var t=E('toast');t.textContent=m;t.classList.add('on');
     clearTimeout(t._x);t._x=setTimeout(function(){t.classList.remove('on');},4200);}
@@ -75,7 +75,7 @@
     if(!v){v=Math.random().toString(36).slice(2)+Date.now().toString(36);localStorage.setItem(k,v);}
     return v;}catch(e){return 'nodev';}}
 
-  /* ── embeds ──────────────────────────────────────────────────────────── */
+  /* ── embeds ── */
   function embedJaas(j){
     var s=document.createElement('script');
     s.src='https://8x8.vc/'+encodeURIComponent(j.appId)+'/external_api.js';
@@ -111,11 +111,11 @@
     else gate('No join credentials came back — close this window and try the call again.');
     startHb();}
 
-  /* ── heartbeats + leave ──────────────────────────────────────────────── */
+  /* ── heartbeats + leave ── */
   function startHb(){if(S.hbT)return;
     S.hbT=setInterval(function(){
       api({callapi:'hb',call:S.callId,name:S.me||'Guest',
-           key:(S.guestSig&&!S.rk)?('guest:'+deviceId()):('roster:'+(S.me||'').toLowerCase())},
+           key:S.guestSig?('guest:'+deviceId()):('roster:'+(S.me||'').toLowerCase())},
         function(){});
     },60000);}
   function leave(silent){if(S.left)return;S.left=true;
@@ -130,9 +130,9 @@
     E('leaveBtn').onclick=function(){leave(false);};
     window.addEventListener('pagehide',function(){leave(true);});}
 
-  /* ── guest link button (roster users only) ───────────────────────────── */
+  /* ── guest link button (roster users only) ── */
   function wireGuestBtn(res){
-    if((S.guestSig&&!S.rk)||!res.guestOk&&res.guestOk!==undefined)return;
+    if(S.guestSig||!res.guestOk&&res.guestOk!==undefined)return;
     var b=E('guestBtn');b.style.display='';
     b.onclick=function(){
       api({callapi:'guestlink',call:S.callId,name:S.me},function(r){
@@ -143,12 +143,11 @@
         else prompt('Copy this link:',r.link);
       });};}
 
-  /* ── boot ────────────────────────────────────────────────────────────── */
+  /* ── boot ── */
   function bootRoster(pay){
-    S.exec=String(pay.exec||'');S.me=String(pay.me||'');S.rk=true;
+    S.exec=String(pay.exec||'');S.me=String(pay.me||'');
     var it=pay.intent||{};
     if(!S.exec||!S.me){gate('This window was opened without its setup payload — start the call from the hub.');return;}
-    micWarm();
     if(it.t==='new'){
       gate('📞 Ringing…');
       api({callapi:'start',name:S.me,ppl:JSON.stringify(it.ppl||[]),
@@ -162,31 +161,15 @@
         if(!r.success){gate(r.message||'That call has ended.');return;}
         embed(r);wireGuestBtn(r);});
     } else gate('Unknown call action — start again from the hub.');}
-  /* V17.6L — ask for the microphone the moment the window opens, before any
-     provider iframe loads: the browser's permission prompt lands front &
-     center once, sticks to this site, and every later call skips it entirely
-     (until the person clears site data). The probe track is released at once. */
-  function micWarm(){
-    try{ if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)
-      navigator.mediaDevices.getUserMedia({audio:true}).then(function(st){
-        try{st.getTracks().forEach(function(t){t.stop();});}catch(e){}
-      },function(){ toast('🎤 The microphone is blocked for this site — click the mic icon by the address bar & allow it, then rejoin.'); });
-    }catch(e){}}
   function bootGuest(pay){
     S.exec=String(pay.exec||'');S.guestSig=String(pay.sig||'');
     var callId=String(pay.call||'');
     if(!S.exec||!callId||!S.guestSig){gate('This guest link is incomplete — ask for a fresh one.');return;}
-    micWarm();
-    /* V17.6L — UNIFIED JOIN: hub-signed roster payloads carry the name preset
-       (nm) + the roster flag (rk). No prompt, no typing — straight in, same
-       proven mechanism guests use, roster identity kept server-side. */
-    if(pay.nm&&pay.rk){
-      S.me=String(pay.nm);S.rk=true;
-      gate('📞 Joining as '+String(pay.nm).replace(/[<>&]/g,'')+'…');
+    /* V19 — roster members arrive with their name preset (nm + rk): join straight in, no prompt */
+    if(pay.rk&&pay.nm){S.me=String(pay.nm);gate('📞 Joining…');
       api({callapi:'join',name:S.me,call:callId,sig:S.guestSig,rk:'1'},function(r){
         if(!r.success){gate(r.message||'That call has ended.');return;}
-        embed(r);wireGuestBtn(r);});
-      return;}
+        embed(r);wireGuestBtn(r);});return;}
     E('gateCard').innerHTML='<div style="font-size:30px">👋</div>'+
       '<div style="margin-top:6px;font-weight:800">Joining: '+(pay.label?String(pay.label).replace(/[<>&]/g,''):'Support call')+'</div>'+
       '<div class="tiny" style="margin-top:4px">Enter your name so the team knows who joined.</div>'+
