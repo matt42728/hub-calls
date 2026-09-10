@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🔔 SME Hub alerts</title>
+<!-- ═══ V20.0b1 — SME HUB SIDEKICK ALERTS TAB (Matthew, 9/10/2026) ═══
+     Lives at https://matt42728.github.io/hub-calls/hub-alerts.html (repo matt42728/hub-calls,
+     beside hub-calls.html). The hub opens it once per session from a click (only for people
+     who turned it on) and drives it over postMessage:
+       hello {who,title}  hb {at}  alert {label,body,critical,tag}  clear  bye
+     It answers ready / off. Messages are accepted ONLY from window.opener and only from the
+     hub frame origins (*.googleusercontent.com / script.google.com). The tab blinks its own
+     title + favicon (a Web Worker keeps the clock honest in a background tab) and closes itself
+     when the hub is gone: opener closed, a bye, or 3 minutes without a heartbeat. -->
+<link id="fav" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2326365A'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle'%3E🔔%3C/text%3E%3C/svg%3E">
+<style>
+  :root{--bg:#0B1424;--card:#0F1A2E;--line:#2C3E64;--ink:#E5EAF3;--mute:#8FA3C4;--ember:#F97316;--ok:#4ADE80;--bad:#F87171}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,"Segoe UI",Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;width:100%;max-width:560px;padding:26px 26px 20px;box-shadow:0 24px 70px rgba(0,0,0,.5)}
+  h1{margin:0 0 4px;font-size:22px;color:#FFF}
+  .sub{color:var(--mute);font-size:12.5px;margin-bottom:16px}
+  .status{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line);border-radius:999px;padding:6px 12px;color:var(--mute)}
+  .status.on{color:var(--ok);border-color:#1f5f3a}.status.bad{color:var(--bad);border-color:#6b2a2a}
+  .dot{width:9px;height:9px;border-radius:50%;background:currentColor}
+  #alert{margin-top:18px;border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:#0B1424;min-height:96px}
+  #alert.hot{border-color:var(--ember);background:#1a1108;animation:pulse 1s infinite alternate}
+  #alert.crit{border-color:var(--bad);background:#1c0d0d}
+  @keyframes pulse{from{box-shadow:0 0 0 0 rgba(249,115,22,.35)}to{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
+  #al{font-size:20px;font-weight:900;color:#FFF;margin:0 0 6px}#ab{color:#DCE4F2;font-size:13.5px}#at{color:var(--mute);font-size:11.5px;margin-top:8px}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:18px}
+  button{border:0;border-radius:12px;padding:12px 18px;font:900 13px system-ui,"Segoe UI",Arial,sans-serif;cursor:pointer;color:#111;background:var(--ember)}
+  button.q{background:#26365A;color:#C3D0E6}button.x{background:transparent;color:var(--mute);font-weight:700;text-decoration:underline;padding:8px 6px}
+  label.t{display:inline-flex;align-items:center;gap:8px;color:var(--mute);font-size:12.5px;cursor:pointer}
+  .foot{margin-top:18px;color:var(--mute);font-size:11.5px;line-height:1.5}
+  .foot b{color:#C3D0E6}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔔 SME Hub alerts</h1>
+  <div class="sub"><span id="who">Waiting for the hub…</span></div>
+  <span class="status" id="st"><span class="dot"></span><span id="stt">Waiting for the hub</span></span>
+  <div id="alert"><p id="al">All quiet.</p><div id="ab">This tab blinks & flashes its icon when the hub needs you: a chat routed to you, a callback due, a message, the still-here check. Keep it open next to the hub.</div><div id="at"></div></div>
+  <div class="row">
+    <button onclick="back()">⬅ BACK TO THE HUB</button>
+    <button class="q" onclick="quiet()">GOT IT · QUIET</button>
+    <label class="t"><input type="checkbox" id="chime" onchange="chimeSet(this.checked)"> chime when something lands</label>
+  </div>
+  <div class="row" style="margin-top:8px"><button class="x" onclick="turnOff()">Turn the alerts tab off (the hub stops opening it)</button></div>
+  <div class="foot">This tab only listens to the hub that opened it. It closes itself when that hub closes. <b>Chrome Memory Saver</b> may put it to sleep after a long idle... if it ever stops blinking, close it & click anywhere in the hub to reopen. Windows notifications from the hub keep working either way.</div>
+</div>
+<script>
+(function(){
+  var OK_ORIGIN=/^https:\/\/([a-z0-9-]+\.)*googleusercontent\.com$/i, OK2='https://script.google.com';
+  var hubOrigin=null, lastBeat=Date.now(), blink=null, blinkOn=false, base=document.title, cur=null, hello=false;
+  var q={}; try{ location.hash.replace(/^#/,'').split('&').forEach(function(p){ var i=p.indexOf('='); if(i>0) q[decodeURIComponent(p.slice(0,i))]=decodeURIComponent(p.slice(i+1)); }); }catch(e){}
+  var E=function(id){ return document.getElementById(id); };
+  var FAV_IDLE=E('fav').href, FAV_HOT="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23F97316'/%3E%3Ctext x='16' y='23' font-size='20' text-anchor='middle' fill='%23111' font-weight='900'%3E!%3C/text%3E%3C/svg%3E";
+  function setWho(t){ E('who').textContent=t; }
+  setWho((q.t||'SME Hub')+(q.who?' · '+q.who:''));
+  base='🔔 '+(q.t||'SME Hub')+' alerts'; document.title=base;
+  function status(cls,txt){ E('st').className='status'+(cls?' '+cls:''); E('stt').textContent=txt; }
+  /* a worker keeps a 1-second clock even when this tab is in the background */
+  var worker=null;
+  try{ worker=new Worker(URL.createObjectURL(new Blob(['setInterval(function(){postMessage(1)},1000)'],{type:'text/javascript'}))); worker.onmessage=tickSec; }catch(e){ setInterval(tickSec,1000); }
+  function tickSec(){
+    if(cur){ blinkOn=!blinkOn; document.title=blinkOn?('🔴 '+cur.label):base; E('fav').href=blinkOn?FAV_HOT:FAV_IDLE; }
+    var age=Date.now()-lastBeat;
+    if(hello&&age>180000){ status('bad','Hub not responding'); if(age>300000){ close(); } }
+    if(!window.opener||window.opener.closed){ close(); }
+  }
+  function close(){ try{ window.close(); }catch(e){} setTimeout(function(){ status('bad','The hub is gone... you can close this tab'); },300); }
+  function show(m){
+    cur=m; var a=E('alert'); a.className=m.critical?'crit':'hot';
+    E('al').textContent=m.label||'Something needs you'; E('ab').textContent=m.body||''; E('at').textContent='Landed '+new Date(m.at||Date.now()).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+    if(chimeOn())chime();
+  }
+  function clearA(){ cur=null; blinkOn=false; document.title=base; E('fav').href=FAV_IDLE; var a=E('alert'); a.className=''; E('al').textContent='All quiet.'; E('ab').textContent='The hub will light this up when it needs you.'; E('at').textContent=''; }
+  window.addEventListener('message',function(ev){
+    if(!window.opener||ev.source!==window.opener)return;
+    if(!(OK_ORIGIN.test(ev.origin)||ev.origin===OK2))return;
+    var m=ev.data; if(!m||typeof m!=='object'||m.v!==1)return;
+    hubOrigin=ev.origin; lastBeat=Date.now();
+    if(m.t==='hello'){ hello=true; status('on','Connected to the hub'); if(m.who||m.title){ setWho((m.title||q.t||'SME Hub')+(m.who?' · '+m.who:'')); base='🔔 '+(m.title||q.t||'SME Hub')+' alerts'; if(!cur)document.title=base; } }
+    else if(m.t==='hb'){ if(hello)status('on','Connected to the hub'); }
+    else if(m.t==='alert'){ show(m); }
+    else if(m.t==='clear'){ clearA(); }
+    else if(m.t==='bye'){ close(); }
+  });
+  function ready(){ try{ if(window.opener&&!window.opener.closed) window.opener.postMessage({v:1,t:'ready'},'*'); }catch(e){} }
+  ready(); var readyN=0; var rt=setInterval(function(){ if(hello||++readyN>20){ clearInterval(rt); return; } ready(); },1500);
+  window.back=function(){ try{ if(window.opener&&!window.opener.closed) window.opener.focus(); }catch(e){} clearA(); };
+  window.quiet=function(){ clearA(); };
+  window.turnOff=function(){ try{ if(window.opener&&!window.opener.closed) window.opener.postMessage({v:1,t:'off'},hubOrigin||'*'); }catch(e){} setTimeout(close,200); };
+  /* chime: opt-in, remembered here */
+  function chimeOn(){ try{ return localStorage.getItem('hub_alert_chime')==='1'; }catch(e){ return false; } }
+  window.chimeSet=function(v){ try{ localStorage.setItem('hub_alert_chime',v?'1':'0'); }catch(e){} if(v)chime(); };
+  try{ E('chime').checked=chimeOn(); }catch(e){}
+  var ac=null;
+  function chime(){ try{ ac=ac||new (window.AudioContext||window.webkitAudioContext)(); var o=ac.createOscillator(), g=ac.createGain(); o.type='sine'; o.frequency.value=880; g.gain.value=0.0001; o.connect(g); g.connect(ac.destination); var t=ac.currentTime; g.gain.exponentialRampToValueAtTime(0.25,t+0.02); g.gain.exponentialRampToValueAtTime(0.0001,t+0.6); o.start(t); o.stop(t+0.65); }catch(e){} }
+  if(!window.opener){ status('bad','Open this from the hub (the 🔔 pill in the corner)'); }
+})();
+</script>
+</body>
+</html>
