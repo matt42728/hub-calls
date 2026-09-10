@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Turner Support Hub — Calls</title>
+<title>Turner Support Hub · Calls · V20.0a1</title>
+<!-- V20.0a1 (9 Sep 2026): #j= direct-join payloads from the hub (exact room + token, no client-side room math), stage beacons for the Call health panel, whiteboard button. #x= and #g= still work for older links. -->
 <style>
   :root{--rail:#0b1220;--ink:#F8FAFC;--mut:#94A3B8;--ok:#16A34A;--warn:#F59E0B;--bad:#EF4444;}
   *{box-sizing:border-box;margin:0;padding:0}
@@ -53,7 +54,8 @@
 <script>
 (function(){
   'use strict';
-  var S={exec:'',me:'',callId:'',provider:'',guestSig:'',hbT:null,api:null,left:false};
+  var S={exec:'',me:'',callId:'',provider:'',guestSig:'',hbT:null,api:null,left:false,rk:'',sig:''};
+  var UA=navigator.userAgent||'';
   function E(id){return document.getElementById(id);}
   function toast(m){var t=E('toast');t.textContent=m;t.classList.add('on');
     clearTimeout(t._x);t._x=setTimeout(function(){t.classList.remove('on');},4200);}
@@ -70,18 +72,22 @@
       .then(function(j){cb(j||{success:false,message:'Empty reply.'});})
       .catch(function(){cb({success:false,message:'Could not reach the hub backend.'});});}
 
+  /* ── V20.0a1 — stage beacons (fire and forget; the hub's Call health panel reads them) ── */
+  function beacon(stage,extra){try{if(!S.exec||!S.callId)return;
+    api({callapi:'beacon',call:S.callId,name:S.me||'Guest',stage:stage,ua:UA,x:extra||''},function(){});}catch(e){}}
+
   /* ── deviceId — same idea JaaS uses for MAU: sticky localStorage token ── */
   function deviceId(){try{var k='hubCallDev',v=localStorage.getItem(k);
     if(!v){v=Math.random().toString(36).slice(2)+Date.now().toString(36);localStorage.setItem(k,v);}
     return v;}catch(e){return 'nodev';}}
 
-  /* ── embeds ── */
+  /* ── embeds ──────────────────────────────────────────────────────────── */
   function embedJaas(j){
     var s=document.createElement('script');
     s.src='https://8x8.vc/'+encodeURIComponent(j.appId)+'/external_api.js';
     s.onload=function(){
       var tb=['microphone','camera','desktop','chat','raisehand','tileview',
-              'participants-pane','settings','hangup','fullscreen','select-background'];
+              'participants-pane','settings','hangup','fullscreen','select-background','whiteboard'];
       if(!j.canShare)tb=tb.filter(function(x){return x!=='desktop';});
       try{
         S.api=new JitsiMeetExternalAPI('8x8.vc',{
@@ -92,6 +98,9 @@
           interfaceConfigOverwrite:{TOOLBAR_BUTTONS:tb,SHOW_JITSI_WATERMARK:false},
         });
         S.api.addListener('readyToClose',function(){leave(true);});
+        S.api.addListener('videoConferenceJoined',function(){E('dot').style.background='var(--ok)';beacon('media','in the room');});
+        S.api.addListener('participantJoined',function(ev){try{beacon('peer',(ev&&ev.displayName)||'someone');}catch(e){}});
+        S.api.addListener('videoConferenceLeft',function(){leave(true);});
         gateOff();wire();
       }catch(e){gate('The call component failed to load — refresh to retry.');}
     };
@@ -105,13 +114,13 @@
   function embed(res){
     S.callId=res.callId;S.provider=res.provider;
     var j=res.join||{};
-    E('lbl').textContent=(res.label||'Call')+' · '+(res.provider==='jaas'?'HD':'Std');
+    E('lbl').textContent=(res.label||'Call')+' · '+(res.provider==='jaas'?'HD':'Std')+' · '+(S.me||'Guest');
     if(j.provider==='jaas'&&j.jwt)embedJaas(j);
     else if(j.provider==='daily'&&j.url)embedDaily(j);
     else gate('No join credentials came back — close this window and try the call again.');
     startHb();}
 
-  /* ── heartbeats + leave ── */
+  /* ── heartbeats + leave ──────────────────────────────────────────────── */
   function startHb(){if(S.hbT)return;
     S.hbT=setInterval(function(){
       api({callapi:'hb',call:S.callId,name:S.me||'Guest',
@@ -130,7 +139,7 @@
     E('leaveBtn').onclick=function(){leave(false);};
     window.addEventListener('pagehide',function(){leave(true);});}
 
-  /* ── guest link button (roster users only) ── */
+  /* ── guest link button (roster users only) ───────────────────────────── */
   function wireGuestBtn(res){
     if(S.guestSig||!res.guestOk&&res.guestOk!==undefined)return;
     var b=E('guestBtn');b.style.display='';
@@ -143,7 +152,7 @@
         else prompt('Copy this link:',r.link);
       });};}
 
-  /* ── boot ── */
+  /* ── boot ────────────────────────────────────────────────────────────── */
   function bootRoster(pay){
     S.exec=String(pay.exec||'');S.me=String(pay.me||'');
     var it=pay.intent||{};
@@ -151,13 +160,13 @@
     if(it.t==='new'){
       gate('📞 Ringing…');
       api({callapi:'start',name:S.me,ppl:JSON.stringify(it.ppl||[]),
-           label:it.label||'Voice call',tid:it.tid||''},function(r){
+           label:it.label||'Voice call',tid:it.tid||'',ua:UA},function(r){
         if(!r.success){gate((r.message||'The call could not start.')+
           '<div class="tiny" style="margin-top:8px">Close this window and try again from the hub.</div>');return;}
         embed(r);wireGuestBtn(r);});
     } else if(it.t==='accept'){
       gate('📞 Joining…');
-      api({callapi:'join',name:S.me,call:it.id||''},function(r){
+      api({callapi:'join',name:S.me,call:it.id||'',ua:UA},function(r){
         if(!r.success){gate(r.message||'That call has ended.');return;}
         embed(r);wireGuestBtn(r);});
     } else gate('Unknown call action — start again from the hub.');}
@@ -167,7 +176,7 @@
     if(!S.exec||!callId||!S.guestSig){gate('This guest link is incomplete — ask for a fresh one.');return;}
     /* V19 — roster members arrive with their name preset (nm + rk): join straight in, no prompt */
     if(pay.rk&&pay.nm){S.me=String(pay.nm);gate('📞 Joining…');
-      api({callapi:'join',name:S.me,call:callId,sig:S.guestSig,rk:'1'},function(r){
+      api({callapi:'join',name:S.me,call:callId,sig:S.guestSig,rk:'1',ua:UA},function(r){
         if(!r.success){gate(r.message||'That call has ended.');return;}
         embed(r);wireGuestBtn(r);});return;}
     E('gateCard').innerHTML='<div style="font-size:30px">👋</div>'+
@@ -179,11 +188,30 @@
       var nm=(E('gName').value||'').trim();
       if(!nm){toast('Please enter your name.');return;}
       S.me=nm;E('gateCard').innerHTML='📞 Joining…';
-      api({callapi:'join',name:nm,call:callId,sig:S.guestSig},function(r){
+      api({callapi:'join',name:nm,call:callId,sig:S.guestSig,ua:UA},function(r){
         if(!r.success){gate(r.message||'That call has ended.');return;}
         embed(r);});};}
+  /* ── V20.0a1 — DIRECT JOIN. The hub hands over the exact room + token for
+     this person; the room opens first, the server is told second. Nothing here
+     decides which room. */
+  function bootDirect(pay){
+    S.exec=String(pay.exec||'');S.me=String(pay.nm||'');S.callId=String(pay.call||'');S.sig=String(pay.sig||'');S.rk='1';
+    if(!S.exec||!S.me||!S.callId||!S.sig){gate('This launch payload is incomplete... start the call again from the hub.');return;}
+    var j=pay.join||{};
+    var res={callId:S.callId,provider:pay.provider||j.provider||'',join:j,label:pay.label||'Call'};
+    var register=function(after){
+      api({callapi:'join',name:S.me,call:S.callId,sig:S.sig,rk:'1',ua:UA},function(r){
+        if(!r.success){if(!S.api&&!E('stage').querySelector('iframe')){gate(r.message||'That call has ended.');}else{toast(r.message||'The hub could not register you on this call.');}return;}
+        wireGuestBtn(r);if(after)after(r);});};
+    if((j.provider==='jaas'&&j.jwt)||(j.provider==='daily'&&j.url)){
+      gate('📞 Joining…');beacon('opened','direct');embed(res);register(null);
+    } else {
+      gate('📞 Joining…');beacon('opened','direct, no token in payload');
+      register(function(r){embed(r);});
+    }}
   var h=location.hash||'';
-  if(h.indexOf('#x=')===0){var p1=b64d(h.slice(3));if(p1)bootRoster(p1);else gate('Bad launch payload.');}
+  if(h.indexOf('#j=')===0){var p0=b64d(h.slice(3));if(p0)bootDirect(p0);else gate('Bad launch payload.');}
+  else if(h.indexOf('#x=')===0){var p1=b64d(h.slice(3));if(p1)bootRoster(p1);else gate('Bad launch payload.');}
   else if(h.indexOf('#g=')===0){var p2=b64d(h.slice(3));if(p2)bootGuest(p2);else gate('Bad guest link.');}
   else gate('Open calls from the hub — this window needs the hub\u2019s launch payload.');
 })();
