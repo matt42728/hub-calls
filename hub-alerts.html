@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>🔔 SME Hub alerts</title>
-<!-- ═══ V20.9 — SME HUB SIDEKICK ALERTS TAB + 🎤 MICROPHONE (Matthew, 9/10/2026 · mic 18 Oct 2026) ═══
+<!-- ═══ V20.10 — SME HUB SIDEKICK ALERTS TAB + 🎤 MICROPHONE (Matthew, 9/10/2026 · mic 18 Oct 2026 · ready chime 18 Oct 2026) ═══
      Lives at https://matt42728.github.io/hub-calls/hub-alerts.html (repo matt42728/hub-calls,
      beside hub-calls.html). The hub opens it once per session from a click (only for people
      who turned it on) and drives it over postMessage:
        hello {who,title}  hb {at}  alert {label,body,critical,tag}  clear  bye
-       listen {lang,mode}  stop                                     (V20.9 · the microphone)
+       listen {lang,mode,chime}  stop {chime}                       (V20.9 · the microphone · V20.10 chime: the ready tones)
      It answers ready / off, and (V20.9) micstate {ok,reason} + heard {interim,final,alternatives:[{text,conf}]}.
      The microphone can only run here: the Apps Script frame has no microphone allow, this
      page does (Chrome asks once, then remembers it for matt42728.github.io). Recognition is
@@ -117,7 +117,7 @@
     else if(m.t==='clear'){ clearA(); }
     else if(m.t==='bye'){ micStop('bye'); close(); }
     else if(m.t==='listen'){ micListen(m); }   /* V20.9 */
-    else if(m.t==='stop'){ micStop('hub'); }   /* V20.9 */
+    else if(m.t==='stop'){ micStop('hub',!!m.chime); }   /* V20.9 · V20.10 chime: the lower tone when the microphone closes */
   });
   function ready(){ try{ if(window.opener&&!window.opener.closed) window.opener.postMessage({v:1,t:'ready'},'*'); }catch(e){} }
   ready(); var readyN=0; var rt=setInterval(function(){ if(hello||++readyN>20){ clearInterval(rt); return; } ready(); },1500);
@@ -138,16 +138,21 @@
      hub is listening it is restarted at once. micstate {ok, reason} answers every listen and every change (no-api · denied ·
      no-mic · error · stopped · listening). The permission is asked once (Chrome remembers it per origin). */
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition||null;
-  var rec=null, micWant=false, micLang='en-US', micMode='justtalk', micRestartT=null, micLast='', micTesting=false, micAsked=false, micStarts=0;
+  var rec=null, micWant=false, micLang='en-US', micMode='justtalk', micRestartT=null, micLast='', micTesting=false, micAsked=false, micStarts=0, micChimePending=false;   /* V20.10 — chime pending until recognition really starts */
   function M(id){ return document.getElementById(id); }
   function micUi(cls,txt){ var m=M('mic'); if(!m)return; m.className=cls||''; M('mstt').textContent=txt; }
-  function micTxt(interim,fin){ var el=M('mtx'); if(!el)return; el.innerHTML=''; if(fin){ var b=document.createElement('span'); b.textContent=fin+' '; el.appendChild(b); } if(interim){ var i=document.createElement('span'); i.className='int'; i.textContent=interim; el.appendChild(i); } if(!fin&&!interim)el.textContent='Listening… say the driver, then your note.'; }
+  function micTxt(interim,fin){ var el=M('mtx'); if(!el)return; el.innerHTML=''; if(fin){ var b=document.createElement('span'); b.textContent=fin+' '; el.appendChild(b); } if(interim){ var i=document.createElement('span'); i.className='int'; i.textContent=interim; el.appendChild(i); } if(!fin&&!interim)el.textContent='Listening… say what the chat was about, then your note.'; }
   function micPost(m){ try{ if(window.opener&&!window.opener.closed){ m.v=1; m.src='sidekick'; window.opener.postMessage(m,hubOrigin||'*'); } }catch(e){} }
   function micState(ok,reason){ micPost({t:'micstate',ok:!!ok,reason:String(reason||''),api:!!SR}); }
+  /* V20.10 (section A1) — the ready chime: two rising tones (about a quarter of a second) when the microphone opens, one lower tone when
+     it closes. Independent of the alert chime above: the hub says whether to play it (the team setting + the expert's own switch). */
+  function micTone(kind){ try{ ac=ac||new (window.AudioContext||window.webkitAudioContext)(); var t=ac.currentTime;
+    function tone(f,at,len,vol){ var o=ac.createOscillator(), g=ac.createGain(); o.type='sine'; o.frequency.value=f; g.gain.value=0.0001; o.connect(g); g.connect(ac.destination); g.gain.exponentialRampToValueAtTime(vol,at+0.015); g.gain.exponentialRampToValueAtTime(0.0001,at+len); o.start(at); o.stop(at+len+0.02); }
+    if(kind==='open'){ tone(660,t,0.12,0.2); tone(880,t+0.13,0.14,0.2); } else tone(440,t,0.18,0.16); }catch(e){} }
   function micBuild(){
     if(rec)return rec;
     var r=new SR(); r.continuous=true; r.interimResults=true; r.maxAlternatives=3; r.lang=micLang;
-    r.onstart=function(){ micStarts++; if(micTesting&&!micWant){ micUi('live','Testing'); return; } micUi('live','Listening'); micState(true,'listening'); };
+    r.onstart=function(){ micStarts++; if(micTesting&&!micWant){ micUi('live','Testing'); return; } if(micChimePending){ micChimePending=false; micTone('open'); } micUi('live','Listening'); micState(true,'listening'); };   /* V20.10 — the ready tones the moment it really listens */
     r.onresult=function(ev){
       var interim='', fin='', alts=[];
       for(var i=ev.resultIndex;i<ev.results.length;i++){ var res=ev.results[i]; if(!res||!res[0])continue;
@@ -168,10 +173,11 @@
   function micListen(m){
     if(!SR){ micUi('bad','Not supported'); M('mtx').textContent='This browser has no speech recognition. Chrome or Edge on Windows does.'; micState(false,'no-api'); return; }
     micLang=String((m&&m.lang)||micLang||'en-US'); micMode=String((m&&m.mode)||'justtalk');
+    micChimePending=!!(m&&m.chime)&&!micWant;   /* V20.10 — only when the microphone was closed; the restarts while listening never chime */
     micBuild(); micWant=true; micAsked=true; micTxt('','');
-    try{ rec.lang=micLang; rec.start(); }catch(e){ /* already started (a second listen while running): fine */ if(micStarts){ micUi('live','Listening'); micState(true,'listening'); } else micState(false,'error:'+(e&&e.message||e)); }
+    try{ rec.lang=micLang; rec.start(); }catch(e){ /* already started (a second listen while running): fine */ micChimePending=false; if(micStarts){ micUi('live','Listening'); micState(true,'listening'); } else micState(false,'error:'+(e&&e.message||e)); }
   }
-  function micStop(why){ micWant=false; clearTimeout(micRestartT); if(rec){ try{ rec.stop(); }catch(e){} } micUi('','Idle'); if(why!=='bye')micState(true,'stopped'); }
+  function micStop(why,chime){ var was=micWant; micWant=false; micChimePending=false; clearTimeout(micRestartT); if(rec){ try{ rec.stop(); }catch(e){} } micUi('','Idle'); if(why!=='bye')micState(true,'stopped'); if(chime&&was)micTone('close'); }   /* V20.10 — the lower tone when the hub closes an open microphone */
   window.micTest=function(){
     if(!SR){ micUi('bad','Not supported'); M('mtx').textContent='This browser has no speech recognition. Chrome or Edge on Windows does.'; return; }
     micTesting=true; micBuild(); micWant=false; micTxt('','');
