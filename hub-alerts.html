@@ -4,12 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>🔔 SME Hub alerts</title>
-<!-- ═══ V20.0b1 — SME HUB SIDEKICK ALERTS TAB (Matthew, 9/10/2026) ═══
+<!-- ═══ V20.9 — SME HUB SIDEKICK ALERTS TAB + 🎤 MICROPHONE (Matthew, 9/10/2026 · mic 18 Oct 2026) ═══
      Lives at https://matt42728.github.io/hub-calls/hub-alerts.html (repo matt42728/hub-calls,
      beside hub-calls.html). The hub opens it once per session from a click (only for people
      who turned it on) and drives it over postMessage:
        hello {who,title}  hb {at}  alert {label,body,critical,tag}  clear  bye
-     It answers ready / off. Messages are accepted ONLY from window.opener and only from the
+       listen {lang,mode}  stop                                     (V20.9 · the microphone)
+     It answers ready / off, and (V20.9) micstate {ok,reason} + heard {interim,final,alternatives:[{text,conf}]}.
+     The microphone can only run here: the Apps Script frame has no microphone allow, this
+     page does (Chrome asks once, then remembers it for matt42728.github.io). Recognition is
+     webkitSpeechRecognition with interim results + 3 alternatives; it restarts itself while
+     the hub is listening and stops on `stop` (the hub owns the silence window) or when the
+     hub is gone. The 🎙 TEST MIC button is for the first time: it asks for the permission and
+     echoes what it hears. Messages are accepted ONLY from window.opener and only from the
      hub frame origins (*.googleusercontent.com / script.google.com). The tab blinks its own
      title + favicon (a Web Worker keeps the clock honest in a background tab) and closes itself
      when the hub is gone: opener closed, a bye, or 3 minutes without a heartbeat. -->
@@ -35,6 +42,19 @@
   label.t{display:inline-flex;align-items:center;gap:8px;color:var(--mute);font-size:12.5px;cursor:pointer}
   .foot{margin-top:18px;color:var(--mute);font-size:11.5px;line-height:1.5}
   .foot b{color:#C3D0E6}
+  /* V20.9 · 🎤 the microphone strip */
+  #mic{margin-top:16px;border:1px solid var(--line);border-radius:14px;padding:12px 14px;background:#0B1424}
+  #mic .mh{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  #mic .mh b{color:#FFF;font-size:13px}
+  #mic .ms{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute);border:1px solid var(--line);border-radius:999px;padding:4px 10px}
+  #mic .ms i{width:8px;height:8px;border-radius:50%;background:currentColor;font-style:normal}
+  #mic.live .ms{color:#F87171;border-color:#6b2a2a}#mic.live .ms i{animation:mpulse .9s infinite alternate}
+  #mic.ok .ms{color:var(--ok);border-color:#1f5f3a}#mic.bad .ms{color:var(--bad);border-color:#6b2a2a}
+  @keyframes mpulse{from{opacity:1;transform:scale(1)}to{opacity:.35;transform:scale(1.5)}}
+  #mic .mt{margin-top:8px;min-height:20px;color:#DCE4F2;font-size:13px}
+  #mic .mt .int{color:var(--mute);font-style:italic}
+  #mic button.m{background:#26365A;color:#E5EAF3;padding:8px 12px;font-size:12px}
+  #mic .mn{margin-top:8px;color:var(--mute);font-size:11.5px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -49,6 +69,11 @@
     <label class="t"><input type="checkbox" id="chime" onchange="chimeSet(this.checked)"> chime when something lands</label>
   </div>
   <div class="row" style="margin-top:8px"><button class="x" onclick="turnOff()">Turn the alerts tab off (the hub stops opening it)</button></div>
+  <div id="mic">
+    <div class="mh"><b>🎤 Microphone for the hub</b><span class="ms" id="mst"><i></i><span id="mstt">Idle</span></span><button class="m" id="mictest" onclick="micTest()">🎙 TEST MIC</button></div>
+    <div class="mt" id="mtx">When the hub's survey card is listening, what you say shows here too.</div>
+    <div class="mn" id="mnote">The first time, Chrome asks to use the microphone on this page: choose Allow and it is remembered. If you blocked it, click the 🔒 / ⓘ icon in the address bar, set Microphone to Allow, then press 🎙 TEST MIC again. A headset that is switched on and within arm's reach is enough; you do not need to hold it.</div>
+  </div>
   <div class="foot">This tab only listens to the hub that opened it. It closes itself when that hub closes. <b>Chrome Memory Saver</b> may put it to sleep after a long idle... if it ever stops blinking, close it & click anywhere in the hub to reopen. Windows notifications from the hub keep working either way.</div>
 </div>
 <script>
@@ -75,9 +100,12 @@
   function show(m){
     cur=m; var a=E('alert'); a.className=m.critical?'crit':'hot';
     E('al').textContent=m.label||'Something needs you'; E('ab').textContent=m.body||''; E('at').textContent='Landed '+new Date(m.at||Date.now()).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+    linksRow(m.links);   /* V20.9 — 🔗 the same YES / NO / answer-in-the-hub buttons the DM carries */
     if(chimeOn())chime();
   }
-  function clearA(){ cur=null; blinkOn=false; document.title=base; E('fav').href=FAV_IDLE; var a=E('alert'); a.className=''; E('al').textContent='All quiet.'; E('ab').textContent='The hub will light this up when it needs you.'; E('at').textContent=''; }
+  /* V20.9 — one-tap links: the hub signs them server-side; this page only shows them (https only, opened in a new tab). */
+  function linksRow(l){ var host=E('alx'); if(!host){ host=document.createElement('div'); host.id='alx'; host.style.cssText='margin-top:8px;display:flex;gap:8px;flex-wrap:wrap'; E('alert').appendChild(host); } host.innerHTML=''; if(!l) return; [['yes','✅ YES','#1f7a4d'],['no','⛔ NO','#7a2d2d'],['open','💬 Answer in the hub','#2b4b7a']].forEach(function(b){ var u=l[b[0]]; if(!u||!/^https:\/\//.test(u)) return; var a=document.createElement('a'); a.href=u; a.target='_blank'; a.rel='noopener'; a.textContent=b[1]; a.title=b[0]==='open'?'Opens the hub on this item':'Records your answer, the same as typing it in the hub'; a.style.cssText='display:inline-block;padding:6px 12px;border-radius:999px;background:'+b[2]+';color:#fff;font-weight:700;text-decoration:none;font-size:13px'; host.appendChild(a); }); }
+  function clearA(){ cur=null; blinkOn=false; linksRow(null); document.title=base; E('fav').href=FAV_IDLE; var a=E('alert'); a.className=''; E('al').textContent='All quiet.'; E('ab').textContent='The hub will light this up when it needs you.'; E('at').textContent=''; }
   window.addEventListener('message',function(ev){
     if(!window.opener||ev.source!==window.opener)return;
     if(!(OK_ORIGIN.test(ev.origin)||ev.origin===OK2))return;
@@ -87,7 +115,9 @@
     else if(m.t==='hb'){ if(hello)status('on','Connected to the hub'); }
     else if(m.t==='alert'){ show(m); }
     else if(m.t==='clear'){ clearA(); }
-    else if(m.t==='bye'){ close(); }
+    else if(m.t==='bye'){ micStop('bye'); close(); }
+    else if(m.t==='listen'){ micListen(m); }   /* V20.9 */
+    else if(m.t==='stop'){ micStop('hub'); }   /* V20.9 */
   });
   function ready(){ try{ if(window.opener&&!window.opener.closed) window.opener.postMessage({v:1,t:'ready'},'*'); }catch(e){} }
   ready(); var readyN=0; var rt=setInterval(function(){ if(hello||++readyN>20){ clearInterval(rt); return; } ready(); },1500);
@@ -101,6 +131,56 @@
   var ac=null;
   function chime(){ try{ ac=ac||new (window.AudioContext||window.webkitAudioContext)(); var o=ac.createOscillator(), g=ac.createGain(); o.type='sine'; o.frequency.value=880; g.gain.value=0.0001; o.connect(g); g.connect(ac.destination); var t=ac.currentTime; g.gain.exponentialRampToValueAtTime(0.25,t+0.02); g.gain.exponentialRampToValueAtTime(0.0001,t+0.6); o.start(t); o.stop(t+0.65); }catch(e){} }
   if(!window.opener){ status('bad','Open this from the hub (the 🔔 pill in the corner)'); }
+
+  /* ═══ V20.9 · 🎤 the microphone mode ═══
+     listen {lang,mode} → start (or keep) recognition; every result posts heard {interim, final, alternatives}; the hub owns the
+     silence window and posts stop. Recognition ends itself every few seconds of silence (Chrome) and after ~60 s, so while the
+     hub is listening it is restarted at once. micstate {ok, reason} answers every listen and every change (no-api · denied ·
+     no-mic · error · stopped · listening). The permission is asked once (Chrome remembers it per origin). */
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition||null;
+  var rec=null, micWant=false, micLang='en-US', micMode='justtalk', micRestartT=null, micLast='', micTesting=false, micAsked=false, micStarts=0;
+  function M(id){ return document.getElementById(id); }
+  function micUi(cls,txt){ var m=M('mic'); if(!m)return; m.className=cls||''; M('mstt').textContent=txt; }
+  function micTxt(interim,fin){ var el=M('mtx'); if(!el)return; el.innerHTML=''; if(fin){ var b=document.createElement('span'); b.textContent=fin+' '; el.appendChild(b); } if(interim){ var i=document.createElement('span'); i.className='int'; i.textContent=interim; el.appendChild(i); } if(!fin&&!interim)el.textContent='Listening… say the driver, then your note.'; }
+  function micPost(m){ try{ if(window.opener&&!window.opener.closed){ m.v=1; m.src='sidekick'; window.opener.postMessage(m,hubOrigin||'*'); } }catch(e){} }
+  function micState(ok,reason){ micPost({t:'micstate',ok:!!ok,reason:String(reason||''),api:!!SR}); }
+  function micBuild(){
+    if(rec)return rec;
+    var r=new SR(); r.continuous=true; r.interimResults=true; r.maxAlternatives=3; r.lang=micLang;
+    r.onstart=function(){ micStarts++; if(micTesting&&!micWant){ micUi('live','Testing'); return; } micUi('live','Listening'); micState(true,'listening'); };
+    r.onresult=function(ev){
+      var interim='', fin='', alts=[];
+      for(var i=ev.resultIndex;i<ev.results.length;i++){ var res=ev.results[i]; if(!res||!res[0])continue;
+        if(res.isFinal){ fin+=(fin?' ':'')+res[0].transcript; for(var k=1;k<res.length&&k<3;k++){ if(res[k]&&res[k].transcript)alts.push({text:String(res[k].transcript).trim(),conf:Number(res[k].confidence||0)}); } }
+        else interim+=(interim?' ':'')+res[0].transcript; }
+      fin=fin.trim(); interim=interim.trim();
+      if(fin)micLast=fin; micTxt(interim,fin||'');
+      micPost({t:'heard',interim:interim,final:fin,alternatives:alts,conf:fin&&ev.results[ev.resultIndex]&&ev.results[ev.resultIndex][0]?Number(ev.results[ev.resultIndex][0].confidence||0):0,at:Date.now()});
+    };
+    r.onerror=function(ev){ var e=ev&&ev.error||'error';
+      if(e==='not-allowed'||e==='service-not-allowed'){ micWant=false; micUi('bad','Blocked'); M('mtx').textContent='The microphone is blocked for this page. Click the 🔒 icon in the address bar → Microphone → Allow, then 🎙 TEST MIC.'; micState(false,'denied'); return; }
+      if(e==='audio-capture'){ micWant=false; micUi('bad','No microphone'); M('mtx').textContent='No microphone was found. Plug in or switch on the headset, then 🎙 TEST MIC.'; micState(false,'no-mic'); return; }
+      if(e==='no-speech'||e==='aborted'||e==='network'){ return; }   /* onend restarts while the hub still wants it */
+      micState(false,'error:'+e); };
+    r.onend=function(){ if(micWant){ clearTimeout(micRestartT); micRestartT=setTimeout(function(){ if(micWant){ try{ rec.lang=micLang; rec.start(); }catch(e){} } },120); } else { micUi(micTesting?'ok':'','Idle'); if(!micTesting)micState(true,'stopped'); micTesting=false; } };
+    rec=r; return r;
+  }
+  function micListen(m){
+    if(!SR){ micUi('bad','Not supported'); M('mtx').textContent='This browser has no speech recognition. Chrome or Edge on Windows does.'; micState(false,'no-api'); return; }
+    micLang=String((m&&m.lang)||micLang||'en-US'); micMode=String((m&&m.mode)||'justtalk');
+    micBuild(); micWant=true; micAsked=true; micTxt('','');
+    try{ rec.lang=micLang; rec.start(); }catch(e){ /* already started (a second listen while running): fine */ if(micStarts){ micUi('live','Listening'); micState(true,'listening'); } else micState(false,'error:'+(e&&e.message||e)); }
+  }
+  function micStop(why){ micWant=false; clearTimeout(micRestartT); if(rec){ try{ rec.stop(); }catch(e){} } micUi('','Idle'); if(why!=='bye')micState(true,'stopped'); }
+  window.micTest=function(){
+    if(!SR){ micUi('bad','Not supported'); M('mtx').textContent='This browser has no speech recognition. Chrome or Edge on Windows does.'; return; }
+    micTesting=true; micBuild(); micWant=false; micTxt('','');
+    M('mtx').textContent='Say something… it shows here when the microphone works.';
+    try{ rec.lang=micLang; rec.start(); micUi('live','Testing'); }catch(e){}
+    setTimeout(function(){ if(micTesting&&!micWant){ try{ rec.stop(); }catch(e){} if(micLast){ M('mtx').textContent='✅ Heard: “'+micLast+'” — the microphone works.'; micUi('ok','Works'); } else { M('mtx').textContent='Nothing was heard in 6 seconds. Check the headset is on and not muted, then try again.'; micUi('bad','Nothing heard'); } } },6000);
+  };
+  if(!SR){ micUi('bad','Not supported'); M('mtx').textContent='This browser has no speech recognition. Chrome or Edge on Windows does.'; }
+  window.addEventListener('pagehide',function(){ micWant=false; try{ if(rec)rec.stop(); }catch(e){} });
 })();
 </script>
 </body>
